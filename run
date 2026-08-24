@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+
+# Entry point for building and running the tech-briefing container.
+# Usage: ./run [-b]
+#   -b  Build the Docker image before running
+
+BUILD=false
+
+# Parse arguments
+while getopts "b" opt; do
+    case "$opt" in
+        b) BUILD=true ;;
+        *)
+            echo "Usage: $0 [-b]"
+            exit 1
+            ;;
+    esac
+done
+
+# Check that the Docker daemon is running
+if ! docker info > /dev/null 2>&1; then
+    echo "[ERROR] Docker daemon is not running. Start Docker and try again."
+    exit 1
+fi
+
+# Build the image if -b was passed
+if [ "$BUILD" = true ]; then
+    echo "[INFO] Building Docker image..."
+    docker compose build
+    if [ $? -ne 0 ]; then
+        echo "[ERROR] docker compose build failed."
+        exit 1
+    fi
+fi
+
+# Run the container (one-shot, removed after exit)
+echo "[INFO] Running tech-briefing container..."
+docker compose run --rm tech-briefing

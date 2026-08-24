@@ -1,0 +1,34 @@
+# Secrets — never commit these
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+data/token.json
+
+# Generated output — overwritten every run, not source
+data/*.mp3
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node (not currently used here, kept for baseline consistency)
+node_modules/
+
+# Runtime logs
+logs/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+.claude/settings.json

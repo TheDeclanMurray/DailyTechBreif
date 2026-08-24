@@ -1,0 +1,31 @@
+services:
+  tech-briefing:
+    build: .
+    container_name: tech-briefing
+    env_file:
+      - .env
+    volumes:
+      # Mount the data directory so credentials/token survive container restarts.
+      # credentials.json and token.json must be placed here before first run.
+      - ./data:/app/data
+      # Mount logs separately so pipeline.log persists and is easy to tail on the host.
+      - ./logs:/app/logs
+    restart: "no"   # Runs once per invocation (cron triggers docker compose run)
+
+  # One-off auth service — run this once to generate token.json before using the main service.
+  # Usage: docker compose run --rm auth
+  # No port mapping needed — uses OOB (out-of-band) OAuth flow: prints a URL,
+  # you visit it in any browser, paste the code back into the terminal.
+  auth:
+    build: .
+    container_name: tech-briefing-auth
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"   # flush stdout immediately so the auth URL appears in the terminal
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "8080:8080"   # loopback OAuth redirect — browser on host hits container's local server
+    command: ["python", "-m", "src.auth"]
+    restart: "no"

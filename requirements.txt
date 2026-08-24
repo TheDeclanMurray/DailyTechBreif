@@ -1,0 +1,20 @@
+# Claude API
+anthropic>=0.40.0
+
+# Gmail API
+google-auth>=2.35.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.155.0
+
+# Secrets management
+python-dotenv>=1.0.0
+
+# Email sending (Phase 3)
+# No extra library needed — smtplib is in stdlib
+
+# TTS (Phase 2 — piper-tts is installed as a system binary, not via pip)
+# piper-tts is invoked via subprocess
+
+# Utilities
+requests>=2.32.0
