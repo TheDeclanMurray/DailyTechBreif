@@ -20,7 +20,11 @@ from src.config import TTS_VOICE, TTS_SPEED, TTS_MODEL_DIR, TTS_OUTPUT_PATH
 log = logging.getLogger("tech_briefing")
 
 PIPER_BINARY  = "/usr/local/bin/piper"
-FFMPEG_BINARY = "/usr/bin/ffmpeg"
+# The Lambda-base Dockerfile installs a static ffmpeg build to /usr/local/bin (no dnf
+# package available on Amazon Linux 2023 -- see docs/DECISIONS.md) instead of apt-get's
+# /usr/bin/ffmpeg on the old python:3.12-slim base. Confirmed via a real Lambda
+# invocation 2026-08-26 that the old path doesn't exist on the new image.
+FFMPEG_BINARY = "/usr/local/bin/ffmpeg"
 
 # atempo must be between 0.5 and 2.0 -- ffmpeg hard limit
 ATEMPO_MIN = 0.5

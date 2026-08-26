@@ -101,3 +101,28 @@ made), with the date. Append-only — entries are never edited or removed once a
   `sub` condition in `infra/iam.tf` to include them, `terraform apply`'d locally, confirmed via
   `aws iam get-role` that the deployed trust policy now matches CloudTrail's observed subject
   exactly.
+
+- **(2026-08-26) All three SSM secrets were still the Terraform-applied `REPLACE_ME` placeholder
+  -- never actually seeded despite CLAUDE.md's Progress section claiming they were (2026-08-25
+  entry).** Discovered via a manual `aws lambda invoke`: Gmail auth failed with
+  `JSONDecodeError` loading the token, and separately the failure-alert email itself failed with
+  SMTP `535 Username and Password not accepted`. User confirmed the SSM values had genuinely
+  never been set. **Resolved same day**: user set all three (`ANTHROPIC_API_KEY`,
+  `SMTP_PASSWORD`, `GMAIL_TOKEN_JSON`) via the AWS Console UI, reusing the same values already
+  working locally in `.env`/`data/token.json` -- a CLI attempt (`aws ssm put-parameter --name
+  /daily-tech-brief/...`) hit `ValidationException: Parameter name must be a fully qualified
+  name` first, almost certainly Git Bash's MSYS auto-converting the leading `/` into a Windows
+  path (the same class of issue as the `--entrypoint /usr/local/bin/piper` case above);
+  `MSYS_NO_PATHCONV=1` would likely fix it if the CLI route is wanted later, but the Console UI
+  sidestepped it entirely.
+
+- **(2026-08-26) `ffmpeg not found at '/usr/bin/ffmpeg'` on the first real Lambda invocation
+  after the secrets were fixed.** Gmail fetch, SSM secrets, and Claude summarization all
+  succeeded (confirmed via a real generated briefing script in the logs) -- pipeline died at the
+  TTS step. `src/tts.py`'s `FFMPEG_BINARY` constant was never updated when the Dockerfile moved
+  from `python:3.12-slim` (where `apt-get install ffmpeg` puts it at `/usr/bin/ffmpeg`) to the
+  Lambda base image's static ffmpeg build (installed to `/usr/local/bin/ffmpeg` -- see
+  `docs/DECISIONS.md`). Missed during local Docker verification because that testing ran `ffmpeg`
+  directly by its known path rather than through `src/tts.py`'s own path constant. **Resolved
+  same day**: updated `FFMPEG_BINARY` to `/usr/local/bin/ffmpeg`, verified inside a rebuilt image
+  that both `PIPER_BINARY` and `FFMPEG_BINARY` resolve via `os.path.exists()` before pushing.

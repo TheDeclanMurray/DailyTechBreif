@@ -1,5 +1,12 @@
 # Tech Briefing Pipeline
 
+## Working conventions
+- **Don't poll GitHub Actions run status repeatedly after triggering a push.** Confirm the push
+  went through, say what's running and roughly how long it should take, then stop and ask the
+  user to report back when it finishes (or check once if asked). Established 2026-08-26 after
+  repeatedly re-fetching a run's status in a loop — the user would rather check the Actions tab
+  themselves and tell me when it's done than have me hammer the API.
+
 ## Overview
 Automated daily briefing pipeline. Reads newsletter emails via Gmail API, summarises
 them with Claude, converts to MP3 via piper-tts, and emails the MP3 every Monday.
@@ -106,19 +113,27 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
       of `infra/`'s real resource definitions exist only on this machine; `git log` still
       shows only the two commits from 2026-08-24 (see `docs/TODO.md`)
 - [x] **`infra/` applied to AWS (2026-08-25)** — ECR repo, Lambda function, both IAM roles
-      (execution + GitHub OIDC deploy), all 3 SSM secrets seeded, EventBridge Scheduler all
-      live and verified via the AWS CLI.
-- [x] **Made the Lambda code-side functional (2026-08-26)** — `src/lambda_handler.py` added;
-      Dockerfile switched to `public.ecr.aws/lambda/python:3.12`; `src/config.py` reads
+      (execution + GitHub OIDC deploy), EventBridge Scheduler all live and verified via the AWS
+      CLI. **Correction (2026-08-26): the "all 3 SSM secrets seeded" claim in this entry's
+      original version was wrong** — they were still the Terraform-applied `REPLACE_ME`
+      placeholder until 2026-08-26; see the fix below and `docs/ISSUES-ENCOUNTERED.md`.
+- [x] **Made the Lambda actually functional end to end (2026-08-26)** — `src/lambda_handler.py`
+      added; Dockerfile switched to `public.ecr.aws/lambda/python:3.12`; `src/config.py` reads
       `ANTHROPIC_API_KEY`/`SMTP_PASSWORD`/the Gmail token from SSM when `IS_LAMBDA`, and the
-      refreshed Gmail token is now written back to SSM too (`persistGmailToken()`), not just the
-      local ephemeral file; `src/logger.py` uses `/tmp/pipeline.log` in Lambda. Verified locally
-      with a real `docker build`, a live piper→ffmpeg synthesis run inside the built image, and
-      booting the image through its actual Lambda CMD to confirm the Runtime Interface Client
-      starts cleanly. **Pushed to `main` 2026-08-26 (commit `f1bc913`)** — CI's `deploy` job will
-      run on this push, but its OIDC auth step can't succeed until `AWS_DEPLOY_ROLE_ARN` is set
-      as a repo variable (last remaining blocker, see `docs/TODO.md`); until then the Lambda
-      keeps running the old broken image.
+      refreshed Gmail token is now written back to SSM too (`persistGmailToken()`); `src/logger.py`
+      uses `/tmp/pipeline.log` in Lambda. Pushed to `main`, `AWS_DEPLOY_ROLE_ARN` set as a repo
+      variable — but the `deploy` job's OIDC auth then failed on every attempt
+      (`AccessDenied: sts:AssumeRoleWithWebIdentity`) because GitHub's real `sub` claim includes
+      immutable owner/repo IDs the trust policy wasn't scoped to; found via CloudTrail, fixed in
+      `infra/iam.tf`, applied locally, pushed — `deploy` job then succeeded. Two more real bugs
+      only surfaced via an actual `aws lambda invoke` against the deployed function: the three
+      SSM secrets were still placeholders (see above), and `src/tts.py`'s `FFMPEG_BINARY` was
+      still hardcoded to the old base image's `/usr/bin/ffmpeg` instead of the new image's
+      `/usr/local/bin/ffmpeg`. Both fixed 2026-08-26. **Confirmed working end to end via a real
+      `aws lambda invoke`**: live Gmail fetch → Claude summarization → piper/ffmpeg TTS → SMTP
+      delivery, no mocks — see `docs/ISSUES-ENCOUNTERED.md` for the full trail of issues found
+      and fixed along the way. Not yet confirmed against an actual EventBridge-triggered
+      (as opposed to manually invoked) run — next scheduled Mon–Fri invocation will confirm that.
 - [x] Project structure aligned to standard layout (`docs/`, `logs/`, `src/tests/`) — 2026-08-21
 - [x] `.claude/hooks/block_secrets.py` + `block_dangerous_git.py` installed — 2026-08-21
 - [x] `infra/*.tf` implementing `docs/AWS_DEPLOYMENT_PLAN.md` (Lambda, ECR, IAM incl. GitHub
@@ -167,13 +182,19 @@ All in `src/config.py`:
 - **Secret/destructive-git protection**: `.claude/hooks/block_secrets.py` and
   `block_dangerous_git.py` run as `PreToolUse` hooks (see `.claude/settings.json`) on every
   tool call — they block reads of secret-shaped files and destructive git operations.
-- **Deployed Lambda was non-functional; code-side fix done and pushed 2026-08-26, not yet live**:
-  `infra/` was applied to AWS on 2026-08-25 before the code-side half of the migration
-  (`docs/AWS_DEPLOYMENT_PLAN.md` §5) was actually done, so every scheduled run since (Tue 08-25,
-  Wed 08-26) crashed identically with `OSError: [Errno 30] Read-only file system: 'logs'` at
-  import time, before `main.py`'s `try/except` was even reached, so `sendFailureAlert()` never
-  ran and no one was notified. Full diagnosis and the fix (handler entry point, Lambda-compatible
-  Dockerfile, SSM-aware config, `/tmp`-based logging) are in `docs/ISSUES-ENCOUNTERED.md` and
-  `docs/DECISIONS.md`. Pushed to `main` 2026-08-26 (commit `f1bc913`) — **the Lambda still runs
-  the old broken image** until CI's `deploy` job can actually authenticate to AWS, which needs
-  `AWS_DEPLOY_ROLE_ARN` set as a GitHub Actions repo variable first (see `docs/TODO.md`).
+- **Deployed Lambda was non-functional; fully fixed and confirmed working 2026-08-26**: `infra/`
+  was applied to AWS on 2026-08-25 before the code-side half of the migration was actually done,
+  so every scheduled run since (Tue 08-25, Wed 08-26) crashed identically with `OSError: [Errno
+  30] Read-only file system: 'logs'` at import time, before `sendFailureAlert()` could ever run.
+  Getting to an actually-working Lambda took five separate fixes, each only found by testing
+  against the real thing rather than assuming the previous fix was sufficient — full trail in
+  `docs/ISSUES-ENCOUNTERED.md`: (1) the core handler/Dockerfile/config/logging fix; (2) two
+  AL2023 Docker build failures (missing `gzip`, missing `ldconfig`); (3) GitHub Actions repo
+  values added as **secrets** instead of **variables** (`deploy.yml` reads `vars.*` only); (4)
+  the OIDC trust policy's `sub` condition not matching GitHub's real token, which includes
+  immutable owner/repo IDs — found via CloudTrail; (5) the three SSM secrets still holding
+  Terraform's `REPLACE_ME` placeholder, plus `src/tts.py`'s `FFMPEG_BINARY` still pointing at the
+  old base image's path — both only surfaced via a real `aws lambda invoke`. **Confirmed working
+  end to end** (live Gmail → Claude → TTS → SMTP, no mocks) via manual invoke 2026-08-26. Not yet
+  confirmed via an actual EventBridge-triggered run — worth checking the next scheduled Mon–Fri
+  invocation once it happens.
