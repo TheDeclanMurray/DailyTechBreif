@@ -9,8 +9,12 @@ this one, it's the detail this one summarizes.
 
 GitHub: `https://github.com/TheDeclanMurray/DailyTechBreif.git`
 
-Not yet initialized locally as of 2026-08-21 — no `.git` directory exists in this project yet.
-See [ISSUES-ENCOUNTERED.md](ISSUES-ENCOUNTERED.md) for what's blocking the first push.
+Initialized and pushed 2026-08-24 (`main` tracks `origin/main`). As of 2026-08-26, `git log`
+still shows only that initial push plus one small docs commit — everything since (the real
+content of every `infra/*.tf` file, `.github/workflows/deploy.yml`, and recent `src/auth.py`/
+`src/gmail_client.py` fixes) is uncommitted or untracked locally. See
+[TODO.md](TODO.md) — this now matters more than usual since the AWS resources that Terraform
+describes are already live with no version-controlled record of what created them.
 
 ## Stack
 
@@ -64,20 +68,25 @@ Full workflow YAML: [AWS_DEPLOYMENT_PLAN.md §8](AWS_DEPLOYMENT_PLAN.md#8-cicd-p
 
 ## Migration status
 
-Not started. [AWS_DEPLOYMENT_PLAN.md §7](AWS_DEPLOYMENT_PLAN.md#7-migration-phases) has the
-full phased rollout (bootstrap → Lambda-compatible image → Terraform apply → CI/CD → cutover).
-Phase 1 — git init, push to GitHub, S3 bucket, SSM params — is the current blocker.
+Out of phase order, and currently broken as a result. [AWS_DEPLOYMENT_PLAN.md §7](AWS_DEPLOYMENT_PLAN.md#7-migration-phases)
+has the full phased rollout (bootstrap → Lambda-compatible image → Terraform apply → CI/CD →
+cutover). Phase 1 (git push, OAuth bootstrap, SSM secrets seeded) and Phase 3 (`terraform apply`,
+run 2026-08-25) are done, but **Phase 2 — the code-side changes the deployed Lambda actually
+needs to run — was skipped**: no `lambda_handler`, no Lambda-compatible `Dockerfile` base, no
+SSM-aware `src/config.py`, no `/tmp`-based `src/logger.py`. Every scheduled invocation since
+08-25 has crashed as a result — see [ISSUES-ENCOUNTERED.md](ISSUES-ENCOUNTERED.md) and
+[TODO.md](TODO.md). Phase 4 (CI/CD wiring) and Phase 5 (cutover) haven't started.
 
 ## Open items
 
-- **Git push credentials** for `https://github.com/TheDeclanMurray/DailyTechBreif.git` — not
-  yet resolved this session (no global git identity or `gh` CLI found on this machine); see
-  [ISSUES-ENCOUNTERED.md](ISSUES-ENCOUNTERED.md)
+- **Phase 2 code changes never implemented** (see Migration status above) — this is the active
+  blocker on the deployed Lambda working at all
+- **Uncommitted local work** — see Repository section above
 - **ffmpeg on Amazon Linux 2023** (the Lambda base image) — not in AL2023's default repos,
-  likely needs a static binary; highest-risk unknown, flagged for early testing in Phase 2
+  likely needs a static binary; highest-risk unknown once the Dockerfile actually switches base
+  images, still untested since that switch hasn't happened yet
 - **Piper binary architecture** (x86_64 vs. arm64/Graviton) — must match whichever Lambda
-  architecture gets chosen; unconfirmed
-- **Lambda memory/timeout sizing** — unmeasured, start generous (1024–2048 MB, 300s) and tune
-  from CloudWatch metrics
-- **EventBridge cron timezone** — the current Ubuntu cron implicitly used server-local time;
-  the EventBridge equivalent needs an explicit UTC-adjusted decision
+  architecture gets chosen; unconfirmed, same reason as above
+- **Lambda memory/timeout sizing** — still unmeasured from a real successful run; the only data
+  so far is ~127MB "Max Memory Used" on the crash-at-import-time path, not representative of an
+  actual pipeline execution (Claude call, piper-tts, ffmpeg all still unexercised in Lambda)

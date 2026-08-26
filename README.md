@@ -8,7 +8,10 @@ Claude into a spoken-style script, converts that to an MP3 via piper-tts, and em
 1. Follow [docs/GMAIL_SETUP.md](docs/GMAIL_SETUP.md) to create Google Cloud credentials and
    download `data/credentials.json`.
 2. Copy `.env.example` to `.env` and fill in your values.
-3. Run the one-time OAuth flow: `docker compose run --rm auth`
+3. Run the one-time OAuth flow: `docker compose run --rm --service-ports auth`
+   (`--service-ports` is required — plain `docker compose run` does not publish the `ports:`
+   from docker-compose.yml, so the OAuth redirect to `localhost:8080` would otherwise have
+   nothing listening on the host to catch it)
 4. Run the pipeline: `./run` (or `./run -b` to rebuild the image first)
 
 ## More detail
@@ -21,4 +24,5 @@ Claude into a spoken-style script, converts that to an MP3 via piper-tts, and em
 - [docs/AWS_DEPLOYMENT_PLAN.md](docs/AWS_DEPLOYMENT_PLAN.md) — detailed Lambda + GitHub Actions migration plan
 - [docs/DECISIONS.md](docs/DECISIONS.md) — running design decisions log
 - [docs/ISSUES-ENCOUNTERED.md](docs/ISSUES-ENCOUNTERED.md) — running problems/resolutions log
-- [infra/](infra/) — Terraform IaC (currently stubs, see infra/README.md)
+- [infra/](infra/) — Terraform IaC for the AWS Lambda deployment (applied to AWS 2026-08-25 — the
+  deployed Lambda is not yet functional, see `docs/TODO.md`)

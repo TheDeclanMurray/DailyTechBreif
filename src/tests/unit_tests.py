@@ -13,6 +13,7 @@ from src.gmail_client import buildSearchQuery, extractPlainText
 from src.summarizer import formatEmailsForPrompt
 from src.tts import convertToMp3, _validateSpeed
 from src.mailer import _buildSubject, _buildMessage, sendBriefing
+from src.config import persistGmailToken
 
 
 # ---------------------------------------------------------------------------
@@ -242,3 +243,55 @@ class TestBuildMessage:
             assert "audio/mpeg" in contentTypes
         finally:
             mailer_module.RECIPIENT_EMAILS = original
+
+
+# ---------------------------------------------------------------------------
+# persistGmailToken -- local-write path always; SSM write-back only when IS_LAMBDA
+# ---------------------------------------------------------------------------
+
+class TestPersistGmailToken:
+
+    def test_emptyString_raisesValueError(self):
+        with pytest.raises(ValueError):
+            persistGmailToken("")
+
+    def test_whitespaceOnly_raisesValueError(self):
+        with pytest.raises(ValueError):
+            persistGmailToken("   \n  ")
+
+    def test_notLambda_writesLocalFileOnly(self, tmp_path, monkeypatch):
+        import src.config as config_module
+
+        fakeTokenPath = tmp_path / "token.json"
+        monkeypatch.setattr(config_module, "TOKEN_PATH", str(fakeTokenPath))
+        monkeypatch.setattr(config_module, "IS_LAMBDA", False)
+
+        # boto3.client should never be constructed on the local-only path -- if it
+        # were, this raises instead of silently succeeding against real AWS.
+        def _shouldNotBeCalled(*args, **kwargs):
+            raise AssertionError("boto3.client() should not be called when IS_LAMBDA is False")
+        monkeypatch.setattr(config_module.boto3, "client", _shouldNotBeCalled)
+
+        persistGmailToken('{"refresh_token": "abc"}')
+        assert fakeTokenPath.read_text() == '{"refresh_token": "abc"}'
+
+    def test_isLambda_alsoWritesBackToSsm(self, tmp_path, monkeypatch):
+        import src.config as config_module
+
+        fakeTokenPath = tmp_path / "token.json"
+        monkeypatch.setattr(config_module, "TOKEN_PATH", str(fakeTokenPath))
+        monkeypatch.setattr(config_module, "IS_LAMBDA", True)
+        monkeypatch.setattr(config_module, "SSM_PARAMETER_PREFIX", "/daily-tech-brief")
+
+        putCalls = []
+        class _FakeSsmClient:
+            def put_parameter(self, **kwargs):
+                putCalls.append(kwargs)
+        monkeypatch.setattr(config_module.boto3, "client", lambda service: _FakeSsmClient())
+
+        persistGmailToken('{"refresh_token": "xyz"}')
+
+        assert fakeTokenPath.read_text() == '{"refresh_token": "xyz"}'
+        assert len(putCalls) == 1
+        assert putCalls[0]["Name"] == "/daily-tech-brief/GMAIL_TOKEN_JSON"
+        assert putCalls[0]["Value"] == '{"refresh_token": "xyz"}'

@@ -4,18 +4,30 @@ services:
     container_name: tech-briefing
     env_file:
       - .env
+    # The Dockerfile's base image is now a Lambda base image, whose default
+    # ENTRYPOINT (/lambda-entrypoint.sh) invokes CMD through the Lambda Runtime
+    # Interface Client rather than as a plain shell command. Override both so local
+    # `docker compose run` still just executes the pipeline as a script, same as
+    # before the Lambda migration.
+    entrypoint: ["python3.12"]
+    command: ["-m", "src.main"]
     volumes:
       # Mount the data directory so credentials/token survive container restarts.
       # credentials.json and token.json must be placed here before first run.
-      - ./data:/app/data
+      # $LAMBDA_TASK_ROOT (the image's WORKDIR) is /var/task, not /app.
+      - ./data:/var/task/data
       # Mount logs separately so pipeline.log persists and is easy to tail on the host.
-      - ./logs:/app/logs
+      - ./logs:/var/task/logs
     restart: "no"   # Runs once per invocation (cron triggers docker compose run)
 
   # One-off auth service — run this once to generate token.json before using the main service.
-  # Usage: docker compose run --rm auth
-  # No port mapping needed — uses OOB (out-of-band) OAuth flow: prints a URL,
-  # you visit it in any browser, paste the code back into the terminal.
+  # Usage: docker compose run --rm --service-ports auth
+  # --service-ports is required: "docker compose run" does NOT publish a service's `ports:`
+  # by default (that's an `up`-only behaviour) — without it, nothing listens on the host's
+  # 8080 and the browser redirect below fails with "localhost refused to connect".
+  # The flow itself is loopback-redirect, not OOB: prints a URL, you open it in any browser,
+  # and the container's local server on port 8080 catches the redirect automatically —
+  # no code-pasting needed.
   auth:
     build: .
     container_name: tech-briefing-auth
@@ -24,8 +36,9 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"   # flush stdout immediately so the auth URL appears in the terminal
     volumes:
-      - ./data:/app/data
+      - ./data:/var/task/data
     ports:
       - "8080:8080"   # loopback OAuth redirect — browser on host hits container's local server
-    command: ["python", "-m", "src.auth"]
+    entrypoint: ["python3.12"]   # see the tech-briefing service's comment above
+    command: ["-m", "src.auth"]
     restart: "no"

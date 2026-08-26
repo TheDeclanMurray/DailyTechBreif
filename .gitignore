@@ -32,3 +32,14 @@ logs/
 .idea/
 .DS_Store
 .claude/settings.json
+
+# Terraform
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+crash.*.log

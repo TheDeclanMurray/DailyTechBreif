@@ -2,7 +2,9 @@
 One-time OAuth2 authentication flow for Gmail API.
 
 Run this ONCE (before using the main pipeline) to generate data/token.json.
-Inside Docker:  docker compose run --rm auth
+Inside Docker:  docker compose run --rm --service-ports auth
+                (--service-ports is required -- "docker compose run" does not publish
+                a service's ports: mapping by default, only "docker compose up" does)
 Locally:        python -m src.auth
 
 How it works:

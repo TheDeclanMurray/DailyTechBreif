@@ -65,11 +65,17 @@ data/
 
 **Option A — Docker (recommended):**
 ```bash
-docker compose run --rm auth
+docker compose run --rm --service-ports auth
 ```
-A URL will be printed. Open it in your browser on the same machine (or copy-paste it
-if running on a headless server). Authorise the app, then paste the resulting code
-back into the terminal when prompted.
+`--service-ports` is required — plain `docker compose run` does not publish the `ports:`
+mapping from docker-compose.yml (that only happens automatically with `up`), so without it
+there's nothing on the host listening for the OAuth redirect and the browser will show
+"localhost refused to connect".
+
+A URL will be printed. Open it in your browser on the same machine. Authorise the app —
+the container's local server on port 8080 catches the redirect automatically and writes
+`token.json`; no code-pasting needed. (If running on a truly headless server with no
+browser access at all, forward port 8080 over SSH first: `ssh -L 8080:localhost:8080 user@host`.)
 
 **Option B — Directly on the server (no Docker):**
 ```bash

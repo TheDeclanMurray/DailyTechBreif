@@ -12,7 +12,14 @@ import logging
 import os
 import datetime
 
-LOG_PATH = os.path.join("logs", "pipeline.log")
+from src.config import IS_LAMBDA
+
+# Lambda's filesystem is read-only outside /tmp, so the relative "logs/" dir used
+# locally doesn't exist there -- this is the exact crash that was happening before
+# (OSError: Read-only file system: 'logs'). /tmp is per-invocation and not persisted
+# across cold starts, which is fine here: readLogTail() only needs the current run's
+# log for a failure alert, not history across runs.
+LOG_PATH = "/tmp/pipeline.log" if IS_LAMBDA else os.path.join("logs", "pipeline.log")
 
 # Matches the tag style used in print() calls previously -- keeps grep-ability
 LOG_FORMAT  = "%(asctime)s [%(levelname)s] %(message)s"

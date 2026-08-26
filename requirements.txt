@@ -10,6 +10,11 @@ google-api-python-client>=2.155.0
 # Secrets management
 python-dotenv>=1.0.0
 
+# AWS SSM Parameter Store access (Lambda only -- src/config.py gates all use of this
+# behind IS_LAMBDA, but it's imported unconditionally so it needs to be installed
+# everywhere, including local dev and CI)
+boto3>=1.34.0
+
 # Email sending (Phase 3)
 # No extra library needed — smtplib is in stdlib
 

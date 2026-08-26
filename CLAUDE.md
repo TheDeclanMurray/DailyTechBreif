@@ -4,7 +4,10 @@
 Automated daily briefing pipeline. Reads newsletter emails via Gmail API, summarises
 them with Claude, converts to MP3 via piper-tts, and emails the MP3 every Monday.
 Stack: Python 3.12, Anthropic SDK, Gmail API (OAuth2), piper-tts, Docker Compose.
-Deployment target: Ubuntu Linux server (on-premises) via cron → `docker compose run`.
+Deployment target: AWS Lambda (container image) + EventBridge Scheduler — see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the canonical summary and
+[docs/DECISIONS.md](docs/DECISIONS.md) for why this replaced the original on-prem
+cron plan. Docker Compose (`./run`) remains the local dev/test harness either way.
 
 ## File & Folder Structure
 ```
@@ -30,8 +33,13 @@ tech-briefing/
 │   ├── DECISIONS.md       # running design decisions log
 │   ├── ISSUES-ENCOUNTERED.md  # running problems/resolutions log
 │   ├── GMAIL_SETUP.md      # step-by-step Google Cloud Console instructions
-│   └── AWS_DEPLOYMENT_PLAN.md  # detailed Lambda + GitHub Actions migration plan (not yet started)
-├── infra/                  # Terraform IaC — currently stubs, see infra/README.md
+│   └── AWS_DEPLOYMENT_PLAN.md  # detailed Lambda + GitHub Actions migration plan (infra/ now implements it, see below)
+├── infra/                  # Terraform IaC for the AWS Lambda deployment — applied to AWS (2026-08-25).
+│                           # Lambda code fix (below) is done and locally verified but not yet
+│                           # deployed — see Known Issues below
+├── .github/
+│   └── workflows/
+│       └── deploy.yml      # CI: pytest unit tests -> build/push image to ECR -> update Lambda code
 ├── logs/
 │   └── pipeline.log        # runtime log, gitignored, one run per header-separated block
 ├── data/
@@ -40,14 +48,15 @@ tech-briefing/
 │   └── briefing.mp3        # generated output, overwritten each run
 ├── src/
 │   ├── __init__.py
-│   ├── config.py           # all constants and env vars in one place
-│   ├── auth.py             # one-time OAuth2 flow — run via: docker compose run --rm auth
+│   ├── config.py           # all constants and env vars in one place; SSM-aware when IS_LAMBDA
+│   ├── auth.py             # one-time OAuth2 flow — run via: docker compose run --rm --service-ports auth
 │   ├── gmail_client.py     # Gmail API: fetch emails from configured senders
 │   ├── summarizer.py       # Claude API: summarise emails into briefing
 │   ├── tts.py              # piper-tts + ffmpeg: briefing text -> data/briefing.mp3
-│   ├── logger.py           # logging setup, writes to logs/pipeline.log
+│   ├── logger.py           # logging setup; /tmp/pipeline.log in Lambda, logs/pipeline.log locally
 │   ├── mailer.py           # SMTP delivery of the briefing + failure alerts
-│   ├── main.py             # pipeline entry point
+│   ├── main.py             # pipeline entry point -- runPipeline() is shared by __main__ and lambda_handler.py
+│   ├── lambda_handler.py   # AWS Lambda entry point: handler(event, context) wraps main.runPipeline()
 │   └── tests/
 │       ├── unit_tests.py        # pure logic, no external calls
 │       └── integration_tests.py # real Gmail + Claude API calls — run manually
@@ -55,13 +64,17 @@ tech-briefing/
 
 ## Component Connections
 ```
-cron (Monday 07:00)
-  └─▶ docker compose run tech-briefing
-        └─▶ main.py
-              ├─▶ gmail_client.py  ──▶ Gmail API  ──▶ emails[]
-              ├─▶ summarizer.py    ──▶ Claude API  ──▶ briefing text
-              ├─▶ [Phase 2] tts.py ──▶ piper-tts  ──▶ briefing.mp3
-              └─▶ [Phase 3] mailer.py ──▶ SMTP     ──▶ email with MP3
+local dev: ./run (docker compose run tech-briefing)
+prod target: EventBridge Scheduler ──▶ Lambda (container image)  [infra applied 2026-08-25; code
+                                                                    fix done + locally verified
+                                                                    2026-08-26, not yet deployed
+                                                                    -- see Known Issues below]
+  └─▶ lambda_handler.py ──▶ main.runPipeline()
+  └─▶ main.py
+        ├─▶ gmail_client.py  ──▶ Gmail API   ──▶ emails[]
+        ├─▶ summarizer.py    ──▶ Claude API  ──▶ briefing text
+        ├─▶ tts.py           ──▶ piper-tts   ──▶ briefing.mp3
+        └─▶ mailer.py        ──▶ SMTP        ──▶ email with MP3
 ```
 All config flows through `src/config.py` — nothing reads `os.environ` directly elsewhere.
 
@@ -84,10 +97,41 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
 - [x] src/tests/integration_tests.py — stubs for Gmail + Claude live tests
 - [x] **Phase 2**: src/tts.py — piper-tts + ffmpeg, WAV -> MP3
 - [x] **Phase 2**: Dockerfile updated — piper binary + lessac-high voice model baked in
-- [ ] **Phase 3**: src/mailer.py — SMTP email with MP3 attachment
-- [ ] **Phase 3**: Cron job setup on Ubuntu server
+- [x] **Phase 3**: src/mailer.py — SMTP email with MP3 attachment (implemented 2026-08-24;
+      confirmed working end-to-end via a live local run 2026-08-25 — see below)
+- [x] `.github/workflows/deploy.yml` — test job (pytest) gates deploy job (build/push
+      image to ECR via OIDC, `aws lambda update-function-code`) — written 2026-08-24;
+      repo variables `AWS_REGION`/`ECR_REPOSITORY`/`LAMBDA_FUNCTION_NAME` set 2026-08-24,
+      `AWS_DEPLOY_ROLE_ARN` still pending. **Not yet pushed to GitHub** — this file and all
+      of `infra/`'s real resource definitions exist only on this machine; `git log` still
+      shows only the two commits from 2026-08-24 (see `docs/TODO.md`)
+- [x] **`infra/` applied to AWS (2026-08-25)** — ECR repo, Lambda function, both IAM roles
+      (execution + GitHub OIDC deploy), all 3 SSM secrets seeded, EventBridge Scheduler all
+      live and verified via the AWS CLI.
+- [x] **Made the Lambda code-side functional (2026-08-26)** — `src/lambda_handler.py` added;
+      Dockerfile switched to `public.ecr.aws/lambda/python:3.12`; `src/config.py` reads
+      `ANTHROPIC_API_KEY`/`SMTP_PASSWORD`/the Gmail token from SSM when `IS_LAMBDA`, and the
+      refreshed Gmail token is now written back to SSM too (`persistGmailToken()`), not just the
+      local ephemeral file; `src/logger.py` uses `/tmp/pipeline.log` in Lambda. Verified locally
+      with a real `docker build`, a live piper→ffmpeg synthesis run inside the built image, and
+      booting the image through its actual Lambda CMD to confirm the Runtime Interface Client
+      starts cleanly. **Not yet deployed** — the fix is only in the local working tree, and the
+      Lambda still runs the old broken image until this is committed, pushed, and CI's `deploy`
+      job runs; see Known Issues below and `docs/TODO.md`.
 - [x] Project structure aligned to standard layout (`docs/`, `logs/`, `src/tests/`) — 2026-08-21
 - [x] `.claude/hooks/block_secrets.py` + `block_dangerous_git.py` installed — 2026-08-21
+- [x] `infra/*.tf` implementing `docs/AWS_DEPLOYMENT_PLAN.md` (Lambda, ECR, IAM incl. GitHub
+      OIDC deploy role, SSM secrets, EventBridge Scheduler) — written 2026-08-24, not yet applied;
+      Phase 1 manual bootstrap (see `infra/README.md`) still needs doing first
+- [x] **Full local pipeline validated end-to-end via Docker Compose (2026-08-25)** — real
+      Gmail fetch (9 emails) → Claude summarisation → piper-tts/ffmpeg → MP3 → SMTP delivery
+      to both recipients, all live, no mocks. Found and fixed a real bug along the way: every
+      reference to the `auth` service's run command was missing `--service-ports`, so
+      `docker compose run --rm auth` never published port 8080 and the OAuth redirect always
+      failed with "localhost refused to connect" — see
+      [ISSUES-ENCOUNTERED.md](docs/ISSUES-ENCOUNTERED.md) for the full diagnosis and the fix
+      across all 6 affected files. This was the last unverified assumption before moving on to
+      `terraform apply` — the application code itself is confirmed sound end-to-end.
 
 ## Key Constants & Config
 All in `src/config.py`:
@@ -100,6 +144,10 @@ All in `src/config.py`:
 - `MAX_CONTENT_CHARS` = `150_000` (in summarizer.py — truncation limit)
 - `LOOKBACK_DAYS`     = from `.env`, default `1`
 - `NEWSLETTER_SENDERS`= from `.env`, comma-separated
+- `IS_LAMBDA`         = `bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))` — set automatically by the
+  Lambda runtime; gates whether secrets come from `.env` or SSM (see Known Issues below)
+- `SSM_PARAMETER_PREFIX` = from the `SSM_PARAMETER_PREFIX` Lambda env var (Terraform-set), e.g.
+  `/daily-tech-brief`
 
 ## Known Issues & Decisions
 - **OAuth2 in Docker**: Interactive browser redirect can't run headlessly. Solution: the
@@ -118,3 +166,14 @@ All in `src/config.py`:
 - **Secret/destructive-git protection**: `.claude/hooks/block_secrets.py` and
   `block_dangerous_git.py` run as `PreToolUse` hooks (see `.claude/settings.json`) on every
   tool call — they block reads of secret-shaped files and destructive git operations.
+- **Deployed Lambda was non-functional; code-side fix done 2026-08-26, not yet deployed**:
+  `infra/` was applied to AWS on 2026-08-25 before the code-side half of the migration
+  (`docs/AWS_DEPLOYMENT_PLAN.md` §5) was actually done, so every scheduled run since (Tue 08-25,
+  Wed 08-26) crashed identically with `OSError: [Errno 30] Read-only file system: 'logs'` at
+  import time — before `main.py`'s `try/except` was even reached, so `sendFailureAlert()` never
+  ran and no one was notified. Full diagnosis and the fix (handler entry point, Lambda-compatible
+  Dockerfile, SSM-aware config, `/tmp`-based logging) are in `docs/ISSUES-ENCOUNTERED.md` and
+  `docs/DECISIONS.md`. **This machine's Lambda still runs the old broken image** — the fix exists
+  only in the local working tree until it's committed, pushed, and CI's `deploy` job runs (see
+  `docs/TODO.md` for the remaining blockers: the commit/push itself, and setting the
+  `AWS_DEPLOY_ROLE_ARN` GitHub Actions repo variable).

@@ -1,5 +1,9 @@
 # Scope — Tech Briefing Pipeline
 
+Snapshot of intended scope, updated in place when a real scoping decision changes it — not a
+log. If the code has quietly grown past what's written here, that's drift worth a conversation,
+not a reason to silently rewrite this file to match.
+
 ## What this is
 
 A personal automation pipeline that, once a week:

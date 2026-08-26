@@ -52,22 +52,35 @@ def main():
     log.info("Pipeline complete.")
 
 
-if __name__ == "__main__":
+def runPipeline():
+    """
+    Sets up logging, runs main(), and handles any fatal error with a failure alert
+    email. Factored out of the __main__ block below so src/lambda_handler.py can call
+    the exact same entry point/error-handling logic instead of duplicating it --
+    local/container execution and the Lambda handler both funnel through this.
+
+    @returns (int) process exit code: 0 on success, non-zero on failure
+    """
     # Logging must be set up before anything else so all modules write to the file
     setupLogging()
     log = logging.getLogger("tech_briefing")
 
     try:
         main()
+        return 0
     except SystemExit as e:
         # sys.exit(0) is a clean exit (no emails, empty summary) -- do not alert
         if e.code != 0:
             errorMsg = f"Pipeline exited with code {e.code}. Check the log for details."
             log.error(errorMsg)
             sendFailureAlert(errorMsg, readLogTail(lineCount=50))
-        sys.exit(e.code)
+        return e.code if e.code is not None else 0
     except Exception as e:
         errorMsg = f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}"
         log.error("Unhandled exception: %s", errorMsg)
         sendFailureAlert(errorMsg, readLogTail(lineCount=50))
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(runPipeline())

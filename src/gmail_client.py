@@ -20,6 +20,7 @@ from src.config import (
     GMAIL_SCOPES,
     NEWSLETTER_SENDERS,
     LOOKBACK_DAYS,
+    persistGmailToken,
 )
 
 log = logging.getLogger("tech_briefing")
@@ -39,7 +40,7 @@ def buildGmailService():
     if not os.path.exists(TOKEN_PATH):
         log.error(
             "token.json not found at '%s'. "
-            "Run the auth flow first:  docker compose run --rm auth", TOKEN_PATH
+            "Run the auth flow first:  docker compose run --rm --service-ports auth", TOKEN_PATH
         )
         sys.exit(1)
 
@@ -51,8 +52,9 @@ def buildGmailService():
             log.info("Access token expired -- refreshing...")
             try:
                 creds.refresh(Request())
-                with open(TOKEN_PATH, "w") as f:
-                    f.write(creds.to_json())
+                # Also writes back to SSM when running in Lambda -- see
+                # persistGmailToken()'s docstring for why that matters.
+                persistGmailToken(creds.to_json())
                 log.info("Token refreshed and saved.")
             except Exception as e:
                 log.error("Token refresh failed: %s. Delete token.json and re-run auth.", e)

@@ -1,0 +1,91 @@
+# CI/CD for the Tech Briefing Pipeline.
+#
+# `test` runs on every push/PR and gates `deploy`. `deploy` only runs on pushes to
+# main (i.e. after a merge) and only if `test` passed: it builds the container image,
+# pushes it to ECR tagged with the git SHA, then repoints the Lambda at that image via
+# `aws lambda update-function-code`.
+#
+# This workflow deliberately never runs `terraform apply` — infra changes are applied
+# locally (see infra/README.md and docs/DECISIONS.md). It only ever updates the code
+# running inside a Lambda function Terraform already created.
+#
+# Auth: OIDC federation, not a static AWS access key (see infra/iam.tf, "github_deploy"
+# role). That role can only push to this one ECR repo and update this one Lambda's code
+# — it cannot read secrets or run terraform. `permissions.id-token: write` below is what
+# lets this workflow request the short-lived OIDC token GitHub signs for AWS to trust.
+#
+# Required repo configuration (Settings -> Secrets and variables -> Actions -> Variables
+# tab — these are NOT secrets, the ARN/region/names below aren't sensitive):
+#   AWS_DEPLOY_ROLE_ARN   - from `terraform output github_deploy_role_arn` in infra/
+#   AWS_REGION            - must match var.aws_region in infra/variables.tf
+#   ECR_REPOSITORY        - must match var.project_name (default: daily-tech-brief)
+#   LAMBDA_FUNCTION_NAME  - same as ECR_REPOSITORY; Lambda function_name = var.project_name
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir pytest
+
+      - name: Run unit tests
+        # Only the unit suite — integration_tests.py needs live Gmail/Claude
+        # credentials and deliberately stays out of CI (see CLAUDE.md).
+        run: python -m pytest src/tests/unit_tests.py -v
+
+  deploy:
+    name: Deploy
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # required to mint the OIDC token for AssumeRoleWithWebIdentity
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Point Lambda at the new image
+        env:
+          IMAGE_URI: ${{ steps.build.outputs.image_uri }}
+        run: |
+          aws lambda update-function-code \
+            --function-name "${{ vars.LAMBDA_FUNCTION_NAME }}" \
+            --image-uri "$IMAGE_URI"
