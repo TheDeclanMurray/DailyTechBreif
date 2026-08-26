@@ -79,3 +79,25 @@ made), with the date. Append-only — entries are never edited or removed once a
   Both were only caught by actually running `docker build` locally (Docker Desktop wasn't
   running at the start of this session; started specifically to de-risk this untested base-image
   swap rather than guessing at AL2023 package availability from documentation alone).
+
+- **(2026-08-26) `deploy` job's OIDC auth step failed on every push with `AccessDenied: Not
+  authorized to perform sts:AssumeRoleWithWebIdentity`, despite the trust policy looking
+  correct.** After setting `AWS_DEPLOY_ROLE_ARN` (and, on the first attempt, discovering it had
+  been added as a GitHub Actions **secret** rather than a **variable** — `deploy.yml` reads
+  `vars.*`, so a secret-only value resolves to an empty string; same fix applied to
+  `AWS_REGION`/`ECR_REPOSITORY`/`LAMBDA_FUNCTION_NAME` when they turned out to have the same
+  problem), the auth step still failed. Compared the applied trust policy (`infra/iam.tf`) byte
+  for byte against GitHub's actual token — repo name casing, branch, `aud`, the OIDC provider
+  ARN and its `client_id_list`/`thumbprint_list`, permissions boundaries, AWS Organizations SCPs
+  (none — account isn't in an org) — everything matched. Root cause only surfaced via CloudTrail
+  (`aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRoleWithWebIdentity`):
+  the `userIdentity.userName` on every denied attempt was
+  `repo:TheDeclanMurray@111345815/DailyTechBreif@1342264423:ref:refs/heads/main`, not the plain
+  `repo:TheDeclanMurray/DailyTechBreif:ref:refs/heads/main` the trust policy's `StringLike`
+  condition was written against. GitHub includes the numeric, immutable owner ID and repo ID in
+  the `sub` claim (a security feature protecting against a renamed/transferred/recreated repo
+  silently inheriting old trust) — the original trust policy just never matched it. **Resolved
+  same day**: added `github_owner_id`/`github_repo_id` to `infra/variables.tf` and updated the
+  `sub` condition in `infra/iam.tf` to include them, `terraform apply`'d locally, confirmed via
+  `aws iam get-role` that the deployed trust policy now matches CloudTrail's observed subject
+  exactly.

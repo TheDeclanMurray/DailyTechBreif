@@ -106,10 +106,18 @@ data "aws_iam_policy_document" "github_deploy_assume" {
     # Loosen this (e.g. drop the branch, or wildcard the repo) and any PR branch —
     # including one from a fork, if this repo is ever public — could assume deploy
     # credentials. Keep it exactly this narrow.
+    #
+    # Includes GitHub's immutable owner/repo IDs (see github_owner_id/github_repo_id in
+    # variables.tf), not just the names -- confirmed via CloudTrail 2026-08-26 that
+    # GitHub's actual sub claim is "repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:...", and a
+    # condition with only the plain names never matches it (every attempt was
+    # AccessDenied). This is also strictly tighter than name-only matching: it survives
+    # correctly if the repo is ever renamed, and can't be silently reclaimed by deleting
+    # and recreating a same-named repo.
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:ref:refs/heads/${var.github_branch}"]
+      values   = ["repo:${split("/", var.github_repo)[0]}@${var.github_owner_id}/${split("/", var.github_repo)[1]}@${var.github_repo_id}:ref:refs/heads/${var.github_branch}"]
     }
   }
 }

@@ -67,6 +67,15 @@ says so and points back at the one it supersedes; don't rewrite history.
   `docs/ISSUES-ENCOUNTERED.md`) — an env var achieves the same dynamic-linker result without
   depending on a binary that may or may not be present.
 
+- **(2026-08-26) GitHub OIDC trust policy scoped to immutable owner/repo IDs, not just names**
+  — `infra/iam.tf`'s `sub` condition now reads `repo:${owner}@${owner_id}/${repo}@${repo_id}:ref:...`
+  instead of just `repo:${owner}/${repo}:ref:...`, because that's what GitHub's actual token
+  contains (confirmed via CloudTrail — see `docs/ISSUES-ENCOUNTERED.md`). Kept the IDs as
+  explicit `terraform.tfvars`-free defaults in `infra/variables.tf` rather than a `StringLike`
+  wildcard (e.g. `OWNER@*/REPO@*`) — pinning the real IDs is strictly tighter and is exactly what
+  this GitHub feature is for (surviving/rejecting a rename or repo recreation correctly), and the
+  IDs are effectively permanent for the life of the repo.
+
 - **(2026-08-26) Gmail token refresh writes back to SSM, not just the local file** — added
   `config.persistGmailToken()`, called from `gmail_client.py`'s refresh path, which writes to
   `TOKEN_PATH` locally always and additionally `ssm:PutParameter`s the refreshed token when

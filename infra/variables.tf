@@ -24,6 +24,26 @@ variable "github_repo" {
   default     = "TheDeclanMurray/DailyTechBreif"
 }
 
+# GitHub includes these two numeric, immutable IDs in the OIDC token's `sub` claim
+# alongside the owner/repo names (format: repo:OWNER@OWNER_ID/REPO@REPO_ID:ref:...) --
+# a security feature so a repo rename, transfer, or delete-then-recreate can't silently
+# inherit an old trust policy. Discovered 2026-08-26 via CloudTrail after every deploy
+# attempt failed AccessDenied against a sub condition that only had the plain names (see
+# docs/ISSUES-ENCOUNTERED.md). Re-derive these if the repo is ever transferred:
+#   curl https://api.github.com/users/<owner>       -> "id"
+#   curl https://api.github.com/repos/<owner>/<repo> -> "id"
+variable "github_owner_id" {
+  description = "Numeric GitHub owner (account) ID -- part of the immutable OIDC sub claim"
+  type        = string
+  default     = "111345815"
+}
+
+variable "github_repo_id" {
+  description = "Numeric GitHub repository ID -- part of the immutable OIDC sub claim"
+  type        = string
+  default     = "1342264423"
+}
+
 variable "github_branch" {
   description = "Branch allowed to assume the deploy role — keep this narrow (see iam.tf)"
   type        = string
