@@ -4,20 +4,14 @@ Active items only — this is not a history. Once something is actually done, re
 worth keeping that it happened belongs in `CLAUDE.md`'s Progress section or `docs/DECISIONS.md`,
 not here). Add the date an item is opened.
 
-- [ ] **(2026-08-26) Commit and push all the local-only work, then set `AWS_DEPLOY_ROLE_ARN`** —
-  `git log` still shows only the two commits from 2026-08-24. Everything since — the real content
-  of every `infra/*.tf` file, `.github/workflows/deploy.yml`, `infra/.terraform.lock.hcl`, the
-  `--service-ports` fixes to `src/auth.py`/`src/gmail_client.py`, and today's Lambda-functionality
-  fix (`src/lambda_handler.py`, the Lambda-base `Dockerfile`, SSM-aware `config.py`/`logger.py`) —
-  exists only on this machine. This matters more than usual right now because the AWS resources
-  described by that uncommitted Terraform are already live: there's no version-controlled record
-  of what actually created them, and the Lambda is currently running an old broken image (see
-  `docs/ISSUES-ENCOUNTERED.md`). Push, then set `AWS_DEPLOY_ROLE_ARN` as a GitHub Actions repo
-  **variable** (Settings → Secrets and variables → Actions → Variables — not a secret, the ARN
-  isn't sensitive): `arn:aws:iam::137068240045:role/daily-tech-brief-github-deploy` (from
-  `terraform output github_deploy_role_arn`). `AWS_REGION`/`ECR_REPOSITORY`/`LAMBDA_FUNCTION_NAME`
-  are already set (2026-08-24) — this is the only one still missing, and without it the `deploy`
-  job's OIDC auth step fails immediately.
+- [ ] **(2026-08-26) Set `AWS_DEPLOY_ROLE_ARN` GitHub Actions repo variable** — pushed to
+  `main` (commit `f1bc913`) 2026-08-26, so `.github/workflows/deploy.yml` is live and running on
+  GitHub now, but the `deploy` job's OIDC auth step will fail until this is set: Settings →
+  Secrets and variables → Actions → Variables (not a secret — the ARN isn't sensitive) →
+  `arn:aws:iam::137068240045:role/daily-tech-brief-github-deploy` (from `terraform output
+  github_deploy_role_arn`). `AWS_REGION`/`ECR_REPOSITORY`/`LAMBDA_FUNCTION_NAME` are already set
+  (2026-08-24) — this is the only one still missing. `gh` CLI isn't installed on this machine, so
+  this has to be done through the GitHub web UI rather than `gh variable set`.
 
 - [ ] **(2026-08-26) Add a backstop alert for crashes the pipeline's own alerting can't catch** —
   `sendFailureAlert()` only runs from inside `main.py`'s `try/except`. The current crash happens

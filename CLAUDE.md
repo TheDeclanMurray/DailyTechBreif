@@ -115,9 +115,10 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
       local ephemeral file; `src/logger.py` uses `/tmp/pipeline.log` in Lambda. Verified locally
       with a real `docker build`, a live piper→ffmpeg synthesis run inside the built image, and
       booting the image through its actual Lambda CMD to confirm the Runtime Interface Client
-      starts cleanly. **Not yet deployed** — the fix is only in the local working tree, and the
-      Lambda still runs the old broken image until this is committed, pushed, and CI's `deploy`
-      job runs; see Known Issues below and `docs/TODO.md`.
+      starts cleanly. **Pushed to `main` 2026-08-26 (commit `f1bc913`)** — CI's `deploy` job will
+      run on this push, but its OIDC auth step can't succeed until `AWS_DEPLOY_ROLE_ARN` is set
+      as a repo variable (last remaining blocker, see `docs/TODO.md`); until then the Lambda
+      keeps running the old broken image.
 - [x] Project structure aligned to standard layout (`docs/`, `logs/`, `src/tests/`) — 2026-08-21
 - [x] `.claude/hooks/block_secrets.py` + `block_dangerous_git.py` installed — 2026-08-21
 - [x] `infra/*.tf` implementing `docs/AWS_DEPLOYMENT_PLAN.md` (Lambda, ECR, IAM incl. GitHub
@@ -166,14 +167,13 @@ All in `src/config.py`:
 - **Secret/destructive-git protection**: `.claude/hooks/block_secrets.py` and
   `block_dangerous_git.py` run as `PreToolUse` hooks (see `.claude/settings.json`) on every
   tool call — they block reads of secret-shaped files and destructive git operations.
-- **Deployed Lambda was non-functional; code-side fix done 2026-08-26, not yet deployed**:
+- **Deployed Lambda was non-functional; code-side fix done and pushed 2026-08-26, not yet live**:
   `infra/` was applied to AWS on 2026-08-25 before the code-side half of the migration
   (`docs/AWS_DEPLOYMENT_PLAN.md` §5) was actually done, so every scheduled run since (Tue 08-25,
   Wed 08-26) crashed identically with `OSError: [Errno 30] Read-only file system: 'logs'` at
-  import time — before `main.py`'s `try/except` was even reached, so `sendFailureAlert()` never
+  import time, before `main.py`'s `try/except` was even reached, so `sendFailureAlert()` never
   ran and no one was notified. Full diagnosis and the fix (handler entry point, Lambda-compatible
   Dockerfile, SSM-aware config, `/tmp`-based logging) are in `docs/ISSUES-ENCOUNTERED.md` and
-  `docs/DECISIONS.md`. **This machine's Lambda still runs the old broken image** — the fix exists
-  only in the local working tree until it's committed, pushed, and CI's `deploy` job runs (see
-  `docs/TODO.md` for the remaining blockers: the commit/push itself, and setting the
-  `AWS_DEPLOY_ROLE_ARN` GitHub Actions repo variable).
+  `docs/DECISIONS.md`. Pushed to `main` 2026-08-26 (commit `f1bc913`) — **the Lambda still runs
+  the old broken image** until CI's `deploy` job can actually authenticate to AWS, which needs
+  `AWS_DEPLOY_ROLE_ARN` set as a GitHub Actions repo variable first (see `docs/TODO.md`).
