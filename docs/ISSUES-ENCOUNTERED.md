@@ -126,3 +126,13 @@ made), with the date. Append-only — entries are never edited or removed once a
   directly by its known path rather than through `src/tts.py`'s own path constant. **Resolved
   same day**: updated `FFMPEG_BINARY` to `/usr/local/bin/ffmpeg`, verified inside a rebuilt image
   that both `PIPER_BINARY` and `FFMPEG_BINARY` resolve via `os.path.exists()` before pushing.
+
+- **(2026-08-26) `OSError: Read-only file system: 'data'` on the next real Lambda invoke, after
+  the ffmpeg fix above.** Gmail fetch, Claude summarization, and the piper/ffmpeg TTS binaries
+  all resolved correctly this time -- died one line further in, at
+  `os.makedirs(os.path.dirname(TTS_OUTPUT_PATH))` in `src/tts.py`. `config.py`'s
+  `TTS_OUTPUT_PATH` was still a relative `data/briefing.mp3` path -- the same root cause as the
+  original `logs/` crash, just a second constant missed when `LOG_PATH` and `TOKEN_PATH` were
+  made Lambda-aware. Grepped for every other relative-path/`os.makedirs()` call in `src/` this
+  time before concluding it was the last one. **Resolved same day**: `TTS_OUTPUT_PATH` is now
+  `/tmp/briefing.mp3` under `IS_LAMBDA`, matching `LOG_PATH`'s existing pattern.
