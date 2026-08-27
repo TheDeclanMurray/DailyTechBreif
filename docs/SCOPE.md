@@ -6,7 +6,7 @@ not a reason to silently rewrite this file to match.
 
 ## What this is
 
-A personal automation pipeline that, once a week:
+A personal automation pipeline that, on a weekday (Mon–Fri) schedule:
 1. Reads a fixed, pre-configured list of newsletter senders from one Gmail inbox (read-only)
 2. Summarizes their recent emails into a spoken-style briefing script using Claude
 3. Converts that script to an MP3 via piper-tts
@@ -20,7 +20,7 @@ the pipeline does.
 
 - **Not multi-tenant** — one Gmail inbox, one `.env` config, run for the owner's own use (and
   whoever is named in the recipient list)
-- **Not real-time** — batch, weekly cadence by design; nothing here needs to react instantly
+- **Not real-time** — batch, scheduled cadence by design; nothing here needs to react instantly
 - **Not a general newsletter/RSS aggregator** — senders are explicitly configured
   (`NEWSLETTER_SENDERS`), never auto-discovered or crawled
 - **Not a web UI or dashboard** — configuration lives in `.env`, the only output artifact is an

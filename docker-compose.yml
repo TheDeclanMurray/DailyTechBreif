@@ -28,6 +28,22 @@ services:
   # The flow itself is loopback-redirect, not OOB: prints a URL, you open it in any browser,
   # and the container's local server on port 8080 catches the redirect automatically —
   # no code-pasting needed.
+  # Unit test runner -- avoids Claude (or anyone) spinning up a throwaway venv on the
+  # host to run pytest. Uses Dockerfile.test (plain python:3.12-slim), not the main
+  # Lambda-based Dockerfile, since unit_tests.py is pure logic with no piper/ffmpeg
+  # dependency and that image is much slower to build.
+  # Usage: docker compose run --rm test
+  test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: tech-briefing-test
+    # Bind-mount src/ so edits are picked up without rebuilding the image.
+    volumes:
+      - ./src:/app/src
+    command: ["python", "-m", "pytest", "src/tests/unit_tests.py", "-v"]
+    restart: "no"
+
   auth:
     build: .
     container_name: tech-briefing-auth

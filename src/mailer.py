@@ -5,7 +5,6 @@ Uses Python's stdlib smtplib and email modules, no extra dependencies required.
 Authenticates with STARTTLS on port 587 using a Gmail App Password.
 """
 
-import os
 import sys
 import logging
 import smtplib
@@ -54,17 +53,17 @@ def _buildSubject():
     return f"Cobaltix Tech Briefing - {dateStr}"
 
 
-def _buildMessage(subject, briefingText, mp3Path):
+def _buildMessage(subject, briefingText, mp3Bytes):
     """
     Constructs a multipart email with the briefing as the body and MP3 as attachment.
     @param subject (str) - email subject line
     @param briefingText (str) - plain-prose briefing script for the email body
-    @param mp3Path (str) - path to the MP3 file to attach
+    @param mp3Bytes (bytes) - MP3 file content to attach, must be non-empty
     @returns MIMEMultipart - fully constructed email message object
-    @throws FileNotFoundError if mp3Path does not exist
+    @throws ValueError if mp3Bytes is empty
     """
-    if not os.path.exists(mp3Path):
-        raise FileNotFoundError(f"MP3 file not found at '{mp3Path}' -- run TTS step first.")
+    if not mp3Bytes:
+        raise ValueError("mp3Bytes must not be empty -- run TTS step first.")
 
     msg = MIMEMultipart()
     msg["From"]    = SMTP_USER
@@ -82,12 +81,9 @@ def _buildMessage(subject, briefingText, mp3Path):
     )
     msg.attach(MIMEText(bodyText, "plain"))
 
-    # MP3 attachment
-    with open(mp3Path, "rb") as mp3File:
-        audio = MIMEAudio(mp3File.read(), _subtype="mpeg")
-
-    mp3Filename = os.path.basename(mp3Path)
-    audio.add_header("Content-Disposition", "attachment", filename=mp3Filename)
+    # MP3 attachment -- built straight from in-memory bytes, never touches disk
+    audio = MIMEAudio(mp3Bytes, _subtype="mpeg")
+    audio.add_header("Content-Disposition", "attachment", filename="briefing.mp3")
     msg.attach(audio)
 
     return msg
@@ -111,11 +107,11 @@ def _smtpSend(toAddresses, msg):
         server.sendmail(SMTP_USER, toAddresses, msg.as_string())
 
 
-def sendBriefing(briefingText, mp3Path):
+def sendBriefing(briefingText, mp3Bytes):
     """
     Sends the daily briefing email to all configured recipients.
     @param briefingText (str) - plain-prose briefing script, must be non-empty
-    @param mp3Path (str) - path to the MP3 attachment, must exist
+    @param mp3Bytes (bytes) - MP3 attachment content, must be non-empty
     @returns None
     @throws ValueError if briefingText is empty
     @throws SystemExit on SMTP authentication failure or connection error
@@ -126,7 +122,7 @@ def sendBriefing(briefingText, mp3Path):
     _validateConfig()
 
     subject = _buildSubject()
-    msg = _buildMessage(subject, briefingText, mp3Path)
+    msg = _buildMessage(subject, briefingText, mp3Bytes)
 
     log.info("Sending '%s' to %d recipient(s)...", subject, len(RECIPIENT_EMAILS))
 

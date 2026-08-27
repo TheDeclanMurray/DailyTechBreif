@@ -43,11 +43,11 @@ def main():
     # Step 3: Log the script for reference
     log.info("Briefing script:\n\n%s\n", briefing)
 
-    # Step 4: Convert to MP3
-    mp3Path = convertToMp3(briefing)
+    # Step 4: Convert to MP3 (returned as in-memory bytes -- never written to disk)
+    mp3Bytes = convertToMp3(briefing)
 
     # Step 5: Email MP3 and written script to all recipients
-    sendBriefing(briefing, mp3Path)
+    sendBriefing(briefing, mp3Bytes)
 
     log.info("Pipeline complete.")
 

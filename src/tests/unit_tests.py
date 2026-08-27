@@ -201,43 +201,40 @@ class TestBuildSubject:
 
 class TestBuildMessage:
 
-    def test_missingMp3_raisesFileNotFoundError(self):
-        with pytest.raises(FileNotFoundError):
-            _buildMessage("Test Subject", "Some briefing text.", "/nonexistent/path.mp3")
+    def test_emptyMp3Bytes_raisesValueError(self):
+        with pytest.raises(ValueError):
+            _buildMessage("Test Subject", "Some briefing text.", b"")
 
     def test_emptyBriefingText_raisesValueError(self):
         with pytest.raises(ValueError):
-            sendBriefing("", "/some/path.mp3")
+            sendBriefing("", b"\xff\xfb\x00")
 
     def test_whitespaceOnlyText_raisesValueError(self):
         with pytest.raises(ValueError):
-            sendBriefing("   ", "/some/path.mp3")
+            sendBriefing("   ", b"\xff\xfb\x00")
 
-    def test_validMessage_containsSubjectAndRecipients(self, tmp_path):
+    def test_validMessage_containsSubjectAndRecipients(self):
         import src.mailer as mailer_module
-        # Write a real temp MP3 file so FileNotFoundError is not raised
-        fakeMp3 = tmp_path / "briefing.mp3"
-        fakeMp3.write_bytes(b"\xff\xfb\x00")  # minimal valid MP3 header bytes
+        fakeMp3Bytes = b"\xff\xfb\x00"  # minimal valid MP3 header bytes
 
         # Patch recipients so the test is not dependent on .env
         original = mailer_module.RECIPIENT_EMAILS
         mailer_module.RECIPIENT_EMAILS = ["test@example.com"]
         try:
-            msg = _buildMessage("Cobaltix Tech Briefing - 2 June 2026", "Hello world.", str(fakeMp3))
+            msg = _buildMessage("Cobaltix Tech Briefing - 2 June 2026", "Hello world.", fakeMp3Bytes)
             assert msg["Subject"] == "Cobaltix Tech Briefing - 2 June 2026"
             assert "test@example.com" in msg["To"]
         finally:
             mailer_module.RECIPIENT_EMAILS = original
 
-    def test_validMessage_attachmentPresent(self, tmp_path):
+    def test_validMessage_attachmentPresent(self):
         import src.mailer as mailer_module
-        fakeMp3 = tmp_path / "briefing.mp3"
-        fakeMp3.write_bytes(b"\xff\xfb\x00")
+        fakeMp3Bytes = b"\xff\xfb\x00"
 
         original = mailer_module.RECIPIENT_EMAILS
         mailer_module.RECIPIENT_EMAILS = ["test@example.com"]
         try:
-            msg = _buildMessage("Subject", "Briefing text.", str(fakeMp3))
+            msg = _buildMessage("Subject", "Briefing text.", fakeMp3Bytes)
             payloads = msg.get_payload()
             contentTypes = [p.get_content_type() for p in payloads]
             assert "audio/mpeg" in contentTypes

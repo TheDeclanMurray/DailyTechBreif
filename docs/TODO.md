@@ -4,11 +4,17 @@ Active items only — this is not a history. Once something is actually done, re
 worth keeping that it happened belongs in `CLAUDE.md`'s Progress section or `docs/DECISIONS.md`,
 not here). Add the date an item is opened.
 
-- [ ] **(2026-08-26) Check the next scheduled (EventBridge-triggered) run, not just the manual
-  invoke** — confirmed working end to end via a manual `aws lambda invoke` 2026-08-26 (real
-  Gmail → Claude → TTS → SMTP delivery), but that's not quite the same code path as a real
-  EventBridge-triggered invocation. Check CloudWatch logs after the next scheduled Mon–Fri run to
-  make sure it goes cleanly too, then this item can come out.
+- [ ] **(2026-08-27) Confirm the deployed Lambda completes the whole pipeline end to end, then
+  check a real EventBridge-triggered run too** — no real `aws lambda invoke` has actually
+  finished the full pipeline yet; each one so far has surfaced one more bug and gotten one step
+  further (Gmail → Claude → TTS all confirmed working individually, but the furthest any single
+  invoke has reached is TTS output, before `TTS_OUTPUT_PATH` was fixed — see
+  `docs/ISSUES-ENCOUNTERED.md`). That fix, plus a separate fix for the `deploy` job's Docker build
+  (johnvansickle.com blocking GitHub Actions runner IPs — switched to BtbN/FFmpeg-Builds), just
+  pushed (`152fb44`); next steps: (1) confirm this `deploy` run succeeds, (2) do one more manual
+  invoke to confirm real SMTP delivery with the actual MP3 attachment, (3) once that's confirmed,
+  check CloudWatch logs after the next scheduled Mon–Fri run to make sure a real
+  EventBridge-triggered invocation goes cleanly too. Then this item can come out.
 
 - [ ] **(2026-08-26) Add a backstop alert for crashes the pipeline's own alerting can't catch** —
   `sendFailureAlert()` only runs from inside `main.py`'s `try/except`. The current crash happens

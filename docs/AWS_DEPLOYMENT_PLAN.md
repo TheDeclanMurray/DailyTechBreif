@@ -1,5 +1,12 @@
 # AWS Deployment Plan — Lambda + GitHub Actions CI/CD
 
+The resource-by-resource detail behind [ARCHITECTURE.md](ARCHITECTURE.md)'s canonical summary —
+cost estimate, migration phases, full risk list. Not superseded by that file; it's the deep dive
+the summary points back to. Snapshot, updated in place as the migration actually progresses
+(phase checkboxes, §2's recap, §10's resolved risks) rather than a log — see
+[DECISIONS.md](DECISIONS.md)/[ISSUES-ENCOUNTERED.md](ISSUES-ENCOUNTERED.md) for the append-only
+history of how it got there.
+
 ## 1. Goal
 
 Replace the current on-prem deployment target (Ubuntu server, cron, `docker compose run`) with:
@@ -10,26 +17,28 @@ This supersedes the "Deployment target" line and the Phase 3 cron item in [CLAUD
 
 ## 2. Current state (recap)
 
-*Updated 2026-08-26 — see [ARCHITECTURE.md](ARCHITECTURE.md#migration-status) for the canonical
+*Updated 2026-08-27 — see [ARCHITECTURE.md](ARCHITECTURE.md#migration-status) for the canonical
 status; this section just keeps the plan's own recap from going stale.*
 
 - Pipeline logic itself is fully implemented and confirmed working locally end-to-end (2026-08-25
   Docker Compose run): `gmail_client.py` → `summarizer.py` → `tts.py` → `mailer.py`, orchestrated
   by `main.py`, with `logger.py` writing to `logs/pipeline.log` and console.
-- Local dev still runs as a Docker container built from a Debian-slim (`python:3.12-slim`)
-  `Dockerfile` with `piper` + `ffmpeg` + a baked-in voice model — **this is also, unmodified, the
-  image Lambda is currently running**, which is the core problem (see §5, none of it done yet).
+- All of §5 below is now implemented: `src/lambda_handler.py` exists, `Dockerfile` uses the
+  Lambda-compatible `public.ecr.aws/lambda/python:3.12` base, `src/config.py` is SSM-aware, and
+  `src/logger.py`/`src/tts.py` use `/tmp`-based paths under `IS_LAMBDA`.
 - Secrets live in `.env` (git-ignored) and `data/credentials.json` / `data/token.json` (OAuth)
-  locally; the SSM equivalents are seeded in AWS but nothing in the code reads them yet.
+  locally; the SSM equivalents were seeded for real 2026-08-26 (the Terraform-applied
+  `REPLACE_ME` placeholders had gone un-noticed until then — see ISSUES-ENCOUNTERED.md) and
+  `src/config.py` reads them when `IS_LAMBDA`.
 - Local dev still triggered manually via the `run` script → `docker compose run --rm tech-briefing`.
-- Git repo exists and was pushed once (2026-08-24), but most work since — including all of
-  `infra/`'s real content and `.github/workflows/deploy.yml` — is uncommitted; see
-  [TODO.md](TODO.md).
-- `infra/` (§6/§7 below) has been applied to real AWS — Lambda, ECR, IAM, SSM, EventBridge
-  Scheduler all live — but the Lambda crashes on every invocation because none of §5 below has
-  actually been implemented. This section originally described §5 as upcoming work gating
-  `terraform apply`; in practice `apply` happened first and §5 is now the active blocker on a
-  live, already-billing Lambda instead.
+- Git repo: 9 commits, working tree clean, everything (including `infra/`'s real content and
+  `.github/workflows/deploy.yml`) committed and pushed.
+- `infra/` (§6/§7 below) is applied to real AWS — Lambda, ECR, IAM, SSM, EventBridge Scheduler
+  all live — and the `deploy` CI/CD job has succeeded end to end at least once. What's still
+  unconfirmed: whether a real invocation of the deployed Lambda completes the *entire* pipeline
+  (Gmail → Claude → TTS → SMTP with a delivered email) — the furthest a real invoke has gotten so
+  far is TTS output, one step before SMTP — and whether an actual EventBridge-triggered run
+  behaves the same as a manual `aws lambda invoke`. See [TODO.md](TODO.md).
 
 ## 3. Target architecture
 
@@ -100,28 +109,27 @@ No changes needed to `summarizer.py`, `tts.py`'s core logic, or `mailer.py` — 
 
 ## 7. Migration phases
 
-- [ ] **Phase 1 — Bootstrap (manual, one-time)**
-  - [ ] Initialize git repo, push to GitHub (currently no `.git` exists)
-  - [ ] Run `auth.py` locally as today to produce a valid `token.json`
-  - [ ] Create SSM parameters for all `.env` secrets, including `GMAIL_TOKEN_JSON` seeded with the `token.json` contents above
-- [ ] **Phase 2 — Lambda-compatible image**
-  - [ ] Fork `Dockerfile` to Lambda base image, resolve `ffmpeg`/`piper` availability on Amazon Linux
-  - [ ] Write `src/lambda_handler.py`
-  - [ ] Update `config.py` to read from SSM in Lambda, `.env` locally
-  - [ ] Update `gmail_client.py`/`auth.py` for SSM token sync
-  - [ ] Test the image locally with the [Lambda Runtime Interface Emulator](https://github.com/aws/aws-lambda-runtime-interface-emulator) before ever pushing to AWS
+- [x] **Phase 1 — Bootstrap (manual, one-time)**
+  - [x] Initialize git repo, push to GitHub (2026-08-24)
+  - [x] Run `auth.py` locally as today to produce a valid `token.json`
+  - [x] Create SSM parameters for all `.env` secrets, including `GMAIL_TOKEN_JSON` seeded with the `token.json` contents above (seeded for real 2026-08-26 — see §2)
+- [x] **Phase 2 — Lambda-compatible image**
+  - [x] Fork `Dockerfile` to Lambda base image, resolve `ffmpeg`/`piper` availability on Amazon Linux (ffmpeg's source needed a second fix 2026-08-27 after the first static-binary host started blocking CI traffic — see ISSUES-ENCOUNTERED.md)
+  - [x] Write `src/lambda_handler.py`
+  - [x] Update `config.py` to read from SSM in Lambda, `.env` locally
+  - [x] Update `gmail_client.py`/`auth.py` for SSM token sync
+  - [x] Test the image locally before ever pushing to AWS (via real `docker build` + booting through the actual Lambda `CMD`, not the standalone RIE tool)
 - [x] **Phase 3 — Infra (Terraform)**
   - [x] `ecr.tf`, `iam.tf`, `lambda.tf`, `ssm.tf`, `eventbridge.tf` written (2026-08-24) — see `infra/README.md`
   - [x] `terraform apply` run manually (2026-08-25) — all resources live, verified via AWS CLI
-- [ ] **Phase 4 — CI/CD (GitHub Actions)**
-  - [x] OIDC trust relationship + deploy role written in Terraform (`infra/iam.tf`, applied 2026-08-25)
-  - [x] `.github/workflows/deploy.yml` written (§8) — **not yet pushed to GitHub**, see `docs/TODO.md`
-  - [ ] Store the deploy role ARN + AWS region as GitHub repo **variables** (region/repo/function
-        name set 2026-08-24; `AWS_DEPLOY_ROLE_ARN` still pending, and blocked on the push above)
+- [x] **Phase 4 — CI/CD (GitHub Actions)**
+  - [x] OIDC trust relationship + deploy role written in Terraform (`infra/iam.tf`, applied 2026-08-25; `sub` condition corrected 2026-08-26 to match GitHub's real token — see DECISIONS.md)
+  - [x] `.github/workflows/deploy.yml` written (§8) and pushed to GitHub (2026-08-26)
+  - [x] Store the deploy role ARN, AWS region, ECR repo, and Lambda function name as GitHub repo **variables** (all four ended up needing to move from secrets to variables 2026-08-26 — see ISSUES-ENCOUNTERED.md); `deploy` job has succeeded end to end at least once
 - [ ] **Phase 5 — Cutover**
-  - [ ] Run the Lambda manually (test invoke) for 1–2 cycles in parallel with the existing on-prem cron, compare output
-  - [ ] Disable the Ubuntu cron job once Lambda output is verified for 2+ consecutive weekday runs
-  - [ ] Update `CLAUDE.md` Progress/Known Issues sections to match
+  - [ ] Confirm a real `aws lambda invoke` completes the entire pipeline (Gmail → Claude → TTS → SMTP, actual email delivered) — not yet reached; furthest so far is TTS output, see `docs/TODO.md`
+  - [ ] Confirm an actual EventBridge-triggered run behaves the same as a manual invoke
+  - [ ] Update `CLAUDE.md` Progress/Known Issues sections to match once both are confirmed
 
 ## 8. CI/CD pipeline (GitHub Actions)
 
@@ -187,8 +195,21 @@ Few-minute invocation on a weekday schedule: Lambda compute + ECR storage + SSM 
 
 ## 10. Open questions / risks
 
-- **Timeout/memory sizing**: unknown until measured — recommend a manual test invoke with generous settings (e.g. 1024–2048 MB memory, 300s timeout) first, then tune down based on actual CloudWatch duration/memory-used metrics. Lambda hard cap is 15 min regardless.
-- **`ffmpeg` on Amazon Linux 2023**: needs a static-binary approach, not `apt-get` — flag this as the highest-risk unknown in Phase 2, test it early.
-- **Piper binary architecture**: confirm the release binary matches whichever Lambda architecture (x86_64 or arm64) you choose before committing to arm64's cost savings.
-- **Ephemeral storage**: default `/tmp` is 512MB; check actual `briefing.mp3` + intermediate WAV size (the existing `data/briefing.mp3` is ~3.7MB, so default should be plenty, but confirm) and bump `EphemeralStorage` config if needed.
+- **Timeout/memory sizing**: still unmeasured — no real invoke has completed the full pipeline yet
+  (furthest so far is TTS output), so there's no representative CloudWatch duration/memory-used
+  data to tune from. `infra/variables.tf` currently defaults to 1536MB as a starting point, not a
+  measured value — tracked in `docs/TODO.md`. Lambda hard cap is 15 min regardless.
+- ~~**`ffmpeg` on Amazon Linux 2023**: needs a static-binary approach, not `apt-get`.~~ Resolved:
+  static binary baked into the Dockerfile. The source needed to change twice —
+  johnvansickle.com first (2026-08-26), then BtbN/FFmpeg-Builds after johnvansickle started
+  blocking/challenging GitHub Actions runner IPs specifically (2026-08-27) — see
+  ISSUES-ENCOUNTERED.md.
+- ~~**Piper binary architecture**: confirm the release binary matches whichever Lambda
+  architecture you choose.~~ Resolved: x86_64 confirmed working across multiple real
+  `aws lambda invoke` calls, matches Lambda's default architecture (`infra/lambda.tf` leaves
+  `architectures` unset).
+- **Ephemeral storage**: default `/tmp` is 512MB; check actual `briefing.mp3` + intermediate WAV
+  size (the existing `data/briefing.mp3` is ~3.7MB, so default should be plenty, but this still
+  hasn't been confirmed from a real Lambda run that reaches the SMTP step) and bump
+  `EphemeralStorage` config if needed.
 - ~~**Timezone for the trigger**: EventBridge Scheduler cron expressions are UTC — pick and document the intended timezone explicitly (the current Ubuntu cron implicitly used server-local time).~~ Resolved: EventBridge *Scheduler* (as opposed to classic EventBridge Rules) takes an explicit IANA timezone alongside the cron expression, so no manual UTC conversion is needed — set to `America/Los_Angeles` in `infra/variables.tf`'s `schedule_timezone`, with `schedule_expression` set to weekdays at 07:00 (`cron(0 7 ? * MON-FRI *)`).

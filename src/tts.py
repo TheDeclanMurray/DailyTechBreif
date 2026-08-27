@@ -15,7 +15,7 @@ import logging
 import subprocess
 import tempfile
 
-from src.config import TTS_VOICE, TTS_SPEED, TTS_MODEL_DIR, TTS_OUTPUT_PATH
+from src.config import TTS_VOICE, TTS_SPEED, TTS_MODEL_DIR
 
 log = logging.getLogger("tech_briefing")
 
@@ -79,9 +79,11 @@ def convertToMp3(text):
     """
     Converts a text string to a pitch-corrected MP3 using piper-tts and ffmpeg.
     Piper generates speech at natural speed; ffmpeg applies tempo adjustment
-    without altering pitch. Writes result to TTS_OUTPUT_PATH (data/briefing.mp3).
+    without altering pitch. The MP3 is never written to disk -- ffmpeg streams it
+    to stdout and this function returns the raw bytes, since the only consumer
+    (mailer.sendBriefing) just attaches it to an email and discards it.
     @param text (str) - briefing script to convert, must be non-empty
-    @returns (str) path to the output MP3 file
+    @returns (bytes) the MP3 file content
     @throws ValueError if text is empty or TTS_SPEED is out of range
     @throws SystemExit if piper or ffmpeg fail
     """
@@ -92,7 +94,6 @@ def convertToMp3(text):
     _validateDependencies()
 
     modelFile = _modelPath()
-    os.makedirs(os.path.dirname(TTS_OUTPUT_PATH), exist_ok=True)
 
     log.info("TTS voice: '%s' | speed: %sx (pitch-corrected via ffmpeg atempo)", TTS_VOICE, TTS_SPEED)
     log.info("Input text: %s characters", f"{len(text):,}")
@@ -123,7 +124,10 @@ def convertToMp3(text):
 
         log.info("WAV generated (%s bytes). Applying %sx tempo...", f"{os.path.getsize(tmpWavPath):,}", TTS_SPEED)
 
-        # Step 2: ffmpeg speeds up audio without changing pitch.
+        # Step 2: ffmpeg speeds up audio without changing pitch, streaming the
+        # encoded MP3 to stdout instead of a file -- "-f mp3 pipe:1" forces the
+        # container format since ffmpeg can't infer it from a file extension
+        # when writing to a pipe.
         # atempo=1.5 means 1.5x speed -- valid range 0.5 to 2.0.
         # -q:a 2 is ~190kbps VBR -- good quality for voice.
         ffmpegCmd = [
@@ -132,7 +136,8 @@ def convertToMp3(text):
             "-i",           tmpWavPath,
             "-filter:a",    f"atempo={TTS_SPEED}",
             "-q:a",         "2",
-            TTS_OUTPUT_PATH,
+            "-f",           "mp3",
+            "pipe:1",
         ]
 
         ffmpegResult = subprocess.run(
@@ -145,11 +150,12 @@ def convertToMp3(text):
             log.error("ffmpeg failed (exit %d):\n%s", ffmpegResult.returncode, errMsg)
             sys.exit(1)
 
+        mp3Bytes = ffmpegResult.stdout
+
     finally:
         # Always clean up the temp WAV
         if os.path.exists(tmpWavPath):
             os.remove(tmpWavPath)
 
-    mp3Size = os.path.getsize(TTS_OUTPUT_PATH)
-    log.info("MP3 written to '%s' (%s bytes / %d KB).", TTS_OUTPUT_PATH, f"{mp3Size:,}", mp3Size // 1024)
-    return TTS_OUTPUT_PATH
+    log.info("MP3 encoded in memory (%s bytes / %d KB).", f"{len(mp3Bytes):,}", len(mp3Bytes) // 1024)
+    return mp3Bytes

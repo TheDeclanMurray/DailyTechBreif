@@ -1,0 +1,21 @@
+# Lightweight image for running the unit test suite locally.
+#
+# Deliberately NOT the main Dockerfile: that one is the Lambda base image plus
+# piper-tts/ffmpeg/the baked-in voice model, which unit_tests.py never touches
+# (it's pure logic, no external calls -- see CLAUDE.md). Building all that just to
+# run pytest would be slow and pointless. This mirrors what .github/workflows/deploy.yml's
+# `test` job actually does: plain Python + requirements.txt + pytest.
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir pytest
+
+# src/ is bind-mounted by the `test` service in docker-compose.yml so edits run
+# without a rebuild; this COPY just means `docker compose build` alone (no mount)
+# also produces a runnable image.
+COPY src/ ./src/
+
+CMD ["python", "-m", "pytest", "src/tests/unit_tests.py", "-v"]

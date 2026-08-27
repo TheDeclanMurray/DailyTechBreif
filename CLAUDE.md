@@ -6,10 +6,17 @@
   user to report back when it finishes (or check once if asked). Established 2026-08-26 after
   repeatedly re-fetching a run's status in a loop — the user would rather check the Actions tab
   themselves and tell me when it's done than have me hammer the API.
+- **Run tests via the `test` Docker Compose service, never a host/throwaway venv.**
+  `docker compose run --rm test` runs `src/tests/unit_tests.py` in `Dockerfile.test` (plain
+  `python:3.12-slim`, no piper/ffmpeg) with `src/` bind-mounted, so no venv is created or needs
+  cleanup. Established 2026-08-27 after repeatedly creating a venv on the host to run pytest and
+  then deleting it — the container does the same job without the create/delete churn. See "Test
+  Files" below for exact commands.
 
 ## Overview
 Automated daily briefing pipeline. Reads newsletter emails via Gmail API, summarises
-them with Claude, converts to MP3 via piper-tts, and emails the MP3 every Monday.
+them with Claude, converts to MP3 via piper-tts, and emails the MP3 on a weekday (Mon–Fri)
+schedule (`cron(0 7 ? * MON-FRI *)` in `infra/variables.tf`).
 Stack: Python 3.12, Anthropic SDK, Gmail API (OAuth2), piper-tts, Docker Compose.
 Deployment target: AWS Lambda (container image) + EventBridge Scheduler — see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the canonical summary and
@@ -19,8 +26,11 @@ cron plan. Docker Compose (`./run`) remains the local dev/test harness either wa
 ## File & Folder Structure
 ```
 tech-briefing/
-├── docker-compose.yml      # main service + one-off auth service
-├── Dockerfile              # python:3.12-slim base
+├── docker-compose.yml      # main service + one-off auth service + test service
+├── Dockerfile              # Lambda-compatible base (public.ecr.aws/lambda/python:3.12);
+│                           # docker-compose.yml overrides entrypoint/command for local dev
+├── Dockerfile.test         # plain python:3.12-slim for the `test` service — no piper/ffmpeg,
+│                           # so unit tests don't require building the heavy Lambda image
 ├── .env                    # secrets — never committed (see .env.example)
 ├── .env.example            # template for .env
 ├── .claudeignore           # excludes *.env, credentials.json, token.json
@@ -41,9 +51,9 @@ tech-briefing/
 │   ├── ISSUES-ENCOUNTERED.md  # running problems/resolutions log
 │   ├── GMAIL_SETUP.md      # step-by-step Google Cloud Console instructions
 │   └── AWS_DEPLOYMENT_PLAN.md  # detailed Lambda + GitHub Actions migration plan (infra/ now implements it, see below)
-├── infra/                  # Terraform IaC for the AWS Lambda deployment — applied to AWS (2026-08-25).
-│                           # Lambda code fix (below) is done and locally verified but not yet
-│                           # deployed — see Known Issues below
+├── infra/                  # Terraform IaC for the AWS Lambda deployment — applied to AWS (2026-08-25),
+│                           # deploy CI/CD working since 2026-08-26 — see Known Issues below for the
+│                           # current status of the deployed Lambda itself
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml      # CI: pytest unit tests -> build/push image to ECR -> update Lambda code
@@ -72,10 +82,13 @@ tech-briefing/
 ## Component Connections
 ```
 local dev: ./run (docker compose run tech-briefing)
-prod target: EventBridge Scheduler ──▶ Lambda (container image)  [infra applied 2026-08-25; code
-                                                                    fix done + locally verified
-                                                                    2026-08-26, not yet deployed
-                                                                    -- see Known Issues below]
+prod target: EventBridge Scheduler ──▶ Lambda (container image)  [infra applied 2026-08-25; deploy
+                                                                    CI/CD working since 2026-08-26;
+                                                                    Gmail→Claude→TTS→SMTP confirmed
+                                                                    working via manual invoke, but
+                                                                    the deployed image doesn't yet
+                                                                    include every fix pushed -- see
+                                                                    Known Issues below]
   └─▶ lambda_handler.py ──▶ main.runPipeline()
   └─▶ main.py
         ├─▶ gmail_client.py  ──▶ Gmail API   ──▶ emails[]
@@ -86,9 +99,12 @@ prod target: EventBridge Scheduler ──▶ Lambda (container image)  [infra ap
 All config flows through `src/config.py` — nothing reads `os.environ` directly elsewhere.
 
 ## Test Files
-- UnitTests: `src/tests/unit_tests.py` — run with: `python -m pytest src/tests/unit_tests.py -v`
-- IntegrationTests: `src/tests/integration_tests.py` — run with: `python -m pytest src/tests/integration_tests.py -v`
-  (requires live credentials — run manually, not in CI)
+- UnitTests: `src/tests/unit_tests.py` — run in the `test` Docker Compose service, not a host
+  venv: `docker compose run --rm test`. Uses `Dockerfile.test` (plain `python:3.12-slim`, not
+  the heavy Lambda/piper/ffmpeg image) and bind-mounts `src/` so edits run without a rebuild.
+  Same command CI runs (see `.github/workflows/deploy.yml`'s `test` job).
+- IntegrationTests: `src/tests/integration_tests.py` — requires live Gmail/Claude credentials;
+  run manually, not in CI or the `test` service: `python -m pytest src/tests/integration_tests.py -v`
 
 ## Progress
 - [x] Project structure and Docker Compose setup
@@ -107,11 +123,9 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
 - [x] **Phase 3**: src/mailer.py — SMTP email with MP3 attachment (implemented 2026-08-24;
       confirmed working end-to-end via a live local run 2026-08-25 — see below)
 - [x] `.github/workflows/deploy.yml` — test job (pytest) gates deploy job (build/push
-      image to ECR via OIDC, `aws lambda update-function-code`) — written 2026-08-24;
-      repo variables `AWS_REGION`/`ECR_REPOSITORY`/`LAMBDA_FUNCTION_NAME` set 2026-08-24,
-      `AWS_DEPLOY_ROLE_ARN` still pending. **Not yet pushed to GitHub** — this file and all
-      of `infra/`'s real resource definitions exist only on this machine; `git log` still
-      shows only the two commits from 2026-08-24 (see `docs/TODO.md`)
+      image to ECR via OIDC, `aws lambda update-function-code`) — written 2026-08-24, pushed to
+      GitHub along with all of `infra/`'s real resource definitions 2026-08-26 (see the entries
+      below for what happened once it actually ran)
 - [x] **`infra/` applied to AWS (2026-08-25)** — ECR repo, Lambda function, both IAM roles
       (execution + GitHub OIDC deploy), EventBridge Scheduler all live and verified via the AWS
       CLI. **Correction (2026-08-26): the "all 3 SSM secrets seeded" claim in this entry's
@@ -129,16 +143,33 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
       only surfaced via an actual `aws lambda invoke` against the deployed function: the three
       SSM secrets were still placeholders (see above), and `src/tts.py`'s `FFMPEG_BINARY` was
       still hardcoded to the old base image's `/usr/bin/ffmpeg` instead of the new image's
-      `/usr/local/bin/ffmpeg`. Both fixed 2026-08-26. **Confirmed working end to end via a real
-      `aws lambda invoke`**: live Gmail fetch → Claude summarization → piper/ffmpeg TTS → SMTP
-      delivery, no mocks — see `docs/ISSUES-ENCOUNTERED.md` for the full trail of issues found
-      and fixed along the way. Not yet confirmed against an actual EventBridge-triggered
-      (as opposed to manually invoked) run — next scheduled Mon–Fri invocation will confirm that.
+      `/usr/local/bin/ffmpeg`. Both fixed 2026-08-26. **Correction: this entry originally claimed
+      "confirmed working end to end" here — that was premature.** The invoke that confirmed the
+      ffmpeg fix actually crashed one step later, at `TTS_OUTPUT_PATH` (see the two items below);
+      real Gmail → Claude → TTS → SMTP delivery on Lambda, with an actual email sent, still hasn't
+      been confirmed as of this entry — see `docs/ISSUES-ENCOUNTERED.md` for the full trail and
+      `docs/TODO.md` for what's still open. Not yet confirmed against an actual
+      EventBridge-triggered (as opposed to manually invoked) run either.
+- [x] **`deploy` job confirmed actually working end to end (2026-08-26)** — after the OIDC fix
+      above, `deploy` succeeded (build → push to ECR → update Lambda code) for the first time.
+- [ ] **Two more real bugs found via manual `aws lambda invoke`, one still mid-fix (2026-08-27)**:
+      (1) `TTS_OUTPUT_PATH` in `src/config.py` was still a relative `data/briefing.mp3` path —
+      same root cause as the original `logs/` crash, fixed 2026-08-26 (`cd55232`), **but that
+      push's own `deploy` build then failed** (see next item), so this fix was not actually live
+      on the deployed Lambda as of this entry. (2) The `deploy` job's Docker build started
+      failing separately: `wget` downloading the static ffmpeg tarball from johnvansickle.com got
+      blocked/challenged by that host specifically for GitHub Actions runner IPs (confirmed the
+      same URL works fine from a normal client) — fixed 2026-08-27 by switching to
+      BtbN/FFmpeg-Builds' GitHub-hosted release assets instead (`152fb44`), verified via a real
+      local `docker compose build` + running the extracted binary inside the built image. This
+      push carries both fixes forward. **Not yet confirmed**: whether this `deploy` run succeeds,
+      and whether the resulting Lambda actually completes end to end (Gmail → Claude → TTS → SMTP
+      with a delivered MP3) — see `docs/TODO.md`.
 - [x] Project structure aligned to standard layout (`docs/`, `logs/`, `src/tests/`) — 2026-08-21
 - [x] `.claude/hooks/block_secrets.py` + `block_dangerous_git.py` installed — 2026-08-21
 - [x] `infra/*.tf` implementing `docs/AWS_DEPLOYMENT_PLAN.md` (Lambda, ECR, IAM incl. GitHub
-      OIDC deploy role, SSM secrets, EventBridge Scheduler) — written 2026-08-24, not yet applied;
-      Phase 1 manual bootstrap (see `infra/README.md`) still needs doing first
+      OIDC deploy role, SSM secrets, EventBridge Scheduler) — written 2026-08-24, applied to AWS
+      2026-08-25 (see the entry above)
 - [x] **Full local pipeline validated end-to-end via Docker Compose (2026-08-25)** — real
       Gmail fetch (9 emails) → Claude summarisation → piper-tts/ffmpeg → MP3 → SMTP delivery
       to both recipients, all live, no mocks. Found and fixed a real bug along the way: every
@@ -151,8 +182,8 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
 
 ## Key Constants & Config
 All in `src/config.py`:
-- `CREDENTIALS_PATH` = `data/credentials.json`
-- `TOKEN_PATH`        = `data/token.json`
+- `CREDENTIALS_PATH` = `data/credentials.json` (local/auth.py only, no Lambda variant needed)
+- `TOKEN_PATH`        = `data/token.json` locally, `/tmp/token.json` under `IS_LAMBDA`
 - `GMAIL_SCOPES`      = `["https://www.googleapis.com/auth/gmail.readonly"]`
 - `OAUTH_LOCAL_PORT`  = `8080` (forwarded in docker-compose for auth flow)
 - `CLAUDE_MODEL`      = `claude-sonnet-4-6`
@@ -160,8 +191,13 @@ All in `src/config.py`:
 - `MAX_CONTENT_CHARS` = `150_000` (in summarizer.py — truncation limit)
 - `LOOKBACK_DAYS`     = from `.env`, default `1`
 - `NEWSLETTER_SENDERS`= from `.env`, comma-separated
+- `TTS_VOICE`         = from `.env`, default `en_GB-jenny_dioco-medium` (must match a model baked
+  into the Dockerfile)
+- `TTS_SPEED`         = from `.env`, default `1.5` (ffmpeg `atempo` multiplier, 0.5–2.0)
+- `TTS_OUTPUT_PATH`   = `data/briefing.mp3` locally, `/tmp/briefing.mp3` under `IS_LAMBDA`
 - `IS_LAMBDA`         = `bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))` — set automatically by the
-  Lambda runtime; gates whether secrets come from `.env` or SSM (see Known Issues below)
+  Lambda runtime; gates whether secrets/paths come from `.env`/local dirs or SSM/`/tmp` (see
+  Known Issues below)
 - `SSM_PARAMETER_PREFIX` = from the `SSM_PARAMETER_PREFIX` Lambda env var (Terraform-set), e.g.
   `/daily-tech-brief`
 
@@ -169,10 +205,13 @@ All in `src/config.py`:
 - **OAuth2 in Docker**: Interactive browser redirect can't run headlessly. Solution: the
   `auth` Docker Compose service forwards port 8080 so the consent redirect works. Run
   it once to generate `token.json`, then the main service runs without user interaction.
-- **piper-tts (Phase 2)**: Installed as a prebuilt binary from GitHub releases. Voice model
-  (en_US-lessac-high) downloaded from HuggingFace at build time and baked into the image.
-  Changing TTS_VOICE requires updating the model wget URL in the Dockerfile and rebuilding.
-  Speed controlled by TTS_LENGTH_SCALE (default 0.67 = ~1.5x). ffmpeg converts WAV -> MP3.
+- **piper-tts + ffmpeg (Phase 2)**: piper generates a WAV at natural speed (voice model
+  `en_GB-jenny_dioco-medium` by default, downloaded from HuggingFace at build time and baked into
+  the image — changing `TTS_VOICE` requires updating the model wget URL in the Dockerfile and
+  rebuilding); ffmpeg then applies the speed change via its `atempo` filter (`TTS_SPEED`, default
+  `1.5`), which preserves pitch — piper's own `--length-scale` doesn't. ffmpeg itself is a static
+  binary baked into the image (not available via AL2023's `dnf` repos) — see
+  `docs/DECISIONS.md`/`docs/ISSUES-ENCOUNTERED.md` for why that source changed twice.
 - **Prompt caching**: The Claude API call in `summarizer.py` marks the large user content
   block as `ephemeral` cache. This saves ~90% on repeated runs with similar content.
   The static `SYSTEM_PROMPT` is NOT currently cached (needs its own `cache_control`
@@ -182,19 +221,22 @@ All in `src/config.py`:
 - **Secret/destructive-git protection**: `.claude/hooks/block_secrets.py` and
   `block_dangerous_git.py` run as `PreToolUse` hooks (see `.claude/settings.json`) on every
   tool call — they block reads of secret-shaped files and destructive git operations.
-- **Deployed Lambda was non-functional; fully fixed and confirmed working 2026-08-26**: `infra/`
-  was applied to AWS on 2026-08-25 before the code-side half of the migration was actually done,
-  so every scheduled run since (Tue 08-25, Wed 08-26) crashed identically with `OSError: [Errno
-  30] Read-only file system: 'logs'` at import time, before `sendFailureAlert()` could ever run.
-  Getting to an actually-working Lambda took five separate fixes, each only found by testing
-  against the real thing rather than assuming the previous fix was sufficient — full trail in
-  `docs/ISSUES-ENCOUNTERED.md`: (1) the core handler/Dockerfile/config/logging fix; (2) two
-  AL2023 Docker build failures (missing `gzip`, missing `ldconfig`); (3) GitHub Actions repo
-  values added as **secrets** instead of **variables** (`deploy.yml` reads `vars.*` only); (4)
-  the OIDC trust policy's `sub` condition not matching GitHub's real token, which includes
-  immutable owner/repo IDs — found via CloudTrail; (5) the three SSM secrets still holding
-  Terraform's `REPLACE_ME` placeholder, plus `src/tts.py`'s `FFMPEG_BINARY` still pointing at the
-  old base image's path — both only surfaced via a real `aws lambda invoke`. **Confirmed working
-  end to end** (live Gmail → Claude → TTS → SMTP, no mocks) via manual invoke 2026-08-26. Not yet
-  confirmed via an actual EventBridge-triggered run — worth checking the next scheduled Mon–Fri
-  invocation once it happens.
+- **Deployed Lambda was non-functional; getting it working has been a long chain of fixes, each
+  only found by testing against the real thing** (`infra/` was applied to AWS on 2026-08-25 before
+  the code-side half of the migration was actually done, so every scheduled run since crashed at
+  import time with `OSError: [Errno 30] Read-only file system: 'logs'`, before `sendFailureAlert()`
+  could ever run). Full trail in `docs/ISSUES-ENCOUNTERED.md`, in order: (1) the core
+  handler/Dockerfile/config/logging fix; (2) two AL2023 Docker build failures (missing `gzip`,
+  missing `ldconfig`); (3) GitHub Actions repo values added as **secrets** instead of
+  **variables** (`deploy.yml` reads `vars.*` only); (4) the OIDC trust policy's `sub` condition
+  not matching GitHub's real token, which includes immutable owner/repo IDs — found via
+  CloudTrail; (5) the three SSM secrets still holding Terraform's `REPLACE_ME` placeholder; (6)
+  `src/tts.py`'s `FFMPEG_BINARY` still pointing at the old base image's path; (7)
+  `TTS_OUTPUT_PATH` in `src/config.py` still a relative path, same class of bug as the original
+  `logs/` crash; (8) the `deploy` job's own Docker build separately started failing because
+  johnvansickle.com (the static ffmpeg source) blocks/challenges GitHub Actions runner IPs —
+  switched to BtbN/FFmpeg-Builds' GitHub-hosted release assets instead. **As of this entry
+  (2026-08-27), fix (8) has just been pushed and the resulting `deploy` run hasn't been confirmed
+  yet** — real Gmail → Claude → TTS → SMTP delivery on Lambda, with an actual email sent, still
+  hasn't been confirmed end to end (the furthest a real invoke has gotten was TTS output, before
+  fix (7)). Also not yet confirmed via an actual EventBridge-triggered run. See `docs/TODO.md`.

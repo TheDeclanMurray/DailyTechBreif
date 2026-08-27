@@ -19,6 +19,7 @@ dist/
 build/
 .venv/
 venv/
+.venv*/
 
 # Node (not currently used here, kept for baseline consistency)
 node_modules/

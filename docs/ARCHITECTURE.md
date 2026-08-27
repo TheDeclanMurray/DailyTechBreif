@@ -9,12 +9,11 @@ this one, it's the detail this one summarizes.
 
 GitHub: `https://github.com/TheDeclanMurray/DailyTechBreif.git`
 
-Initialized and pushed 2026-08-24 (`main` tracks `origin/main`). As of 2026-08-26, `git log`
-still shows only that initial push plus one small docs commit — everything since (the real
-content of every `infra/*.tf` file, `.github/workflows/deploy.yml`, and recent `src/auth.py`/
-`src/gmail_client.py` fixes) is uncommitted or untracked locally. See
-[TODO.md](TODO.md) — this now matters more than usual since the AWS resources that Terraform
-describes are already live with no version-controlled record of what created them.
+Initialized and pushed 2026-08-24 (`main` tracks `origin/main`). As of 2026-08-27, `git log` has
+9 commits and the working tree is clean — every `infra/*.tf` file,
+`.github/workflows/deploy.yml`, and every fix made while getting the deployed Lambda actually
+working is committed and pushed. (The earlier "everything since the initial push is uncommitted"
+state noted here previously was resolved same-day, 2026-08-26.)
 
 ## Stack
 
@@ -27,9 +26,12 @@ describes are already live with no version-controlled record of what created the
 
 ## Containerization
 
-Docker. `Dockerfile` (currently `python:3.12-slim`) + `docker-compose.yml` with two services:
-the main pipeline, and a one-off `auth` service that forwards port 8080 for the interactive
-OAuth consent redirect (can't run headlessly).
+Docker. `Dockerfile` (Lambda-compatible base, `public.ecr.aws/lambda/python:3.12`, Amazon Linux
+2023 — switched from `python:3.12-slim` 2026-08-26, see DECISIONS.md) + `docker-compose.yml` with
+two services: the main pipeline, and a one-off `auth` service that forwards port 8080 for the
+interactive OAuth consent redirect (can't run headlessly). One image serves both: `CMD` points at
+the Lambda handler for real deployment, and `docker-compose.yml` overrides `entrypoint`/`command`
+to run the pipeline as a plain script for local dev.
 
 ## Hosting & Infrastructure-as-Code
 
@@ -61,32 +63,38 @@ OAuth consent redirect (can't run headlessly).
    (`aws-actions/configure-aws-credentials`, `role-to-assume`) — no static AWS access keys
    stored in GitHub at all — then builds the image, pushes to ECR, and runs
    `aws lambda update-function-code`
-3. Deploy role ARN + AWS region are stored as GitHub Actions **variables**, not secrets — the
-   ARN itself isn't sensitive
+3. Deploy role ARN, AWS region, ECR repository, and Lambda function name are all stored as
+   GitHub Actions **variables**, not secrets — none of the four are sensitive (all had to be
+   moved from secrets to variables 2026-08-26 after `deploy.yml`'s `vars.*` reads came up empty,
+   see ISSUES-ENCOUNTERED.md)
 
 Full workflow YAML: [AWS_DEPLOYMENT_PLAN.md §8](AWS_DEPLOYMENT_PLAN.md#8-cicd-pipeline-github-actions).
 
 ## Migration status
 
-Out of phase order, and currently broken as a result. [AWS_DEPLOYMENT_PLAN.md §7](AWS_DEPLOYMENT_PLAN.md#7-migration-phases)
+Ran out of phase order originally (Phase 3 landed before Phase 2), which is what caused the
+deployed Lambda to crash on every invocation for two days before anyone noticed — see
+[ISSUES-ENCOUNTERED.md](ISSUES-ENCOUNTERED.md). [AWS_DEPLOYMENT_PLAN.md §7](AWS_DEPLOYMENT_PLAN.md#7-migration-phases)
 has the full phased rollout (bootstrap → Lambda-compatible image → Terraform apply → CI/CD →
-cutover). Phase 1 (git push, OAuth bootstrap, SSM secrets seeded) and Phase 3 (`terraform apply`,
-run 2026-08-25) are done, but **Phase 2 — the code-side changes the deployed Lambda actually
-needs to run — was skipped**: no `lambda_handler`, no Lambda-compatible `Dockerfile` base, no
-SSM-aware `src/config.py`, no `/tmp`-based `src/logger.py`. Every scheduled invocation since
-08-25 has crashed as a result — see [ISSUES-ENCOUNTERED.md](ISSUES-ENCOUNTERED.md) and
-[TODO.md](TODO.md). Phase 4 (CI/CD wiring) and Phase 5 (cutover) haven't started.
+cutover). As of 2026-08-27: Phase 1 (bootstrap), Phase 2 (Lambda-compatible image/code), Phase 3
+(`terraform apply`, 2026-08-25), and Phase 4 (CI/CD — the `deploy` job has succeeded end to end at
+least once) are all done. Phase 5 (cutover) hasn't formally started — the pipeline hasn't yet been
+confirmed to complete fully end to end on a real deployed invocation (a chain of real bugs, each
+only found by testing against the actual Lambda, has kept pushing that confirmation back one step
+further each time — see TODO.md), and no EventBridge-triggered run has been checked yet either.
 
 ## Open items
 
-- **Phase 2 code changes never implemented** (see Migration status above) — this is the active
-  blocker on the deployed Lambda working at all
-- **Uncommitted local work** — see Repository section above
-- **ffmpeg on Amazon Linux 2023** (the Lambda base image) — not in AL2023's default repos,
-  likely needs a static binary; highest-risk unknown once the Dockerfile actually switches base
-  images, still untested since that switch hasn't happened yet
-- **Piper binary architecture** (x86_64 vs. arm64/Graviton) — must match whichever Lambda
-  architecture gets chosen; unconfirmed, same reason as above
-- **Lambda memory/timeout sizing** — still unmeasured from a real successful run; the only data
-  so far is ~127MB "Max Memory Used" on the crash-at-import-time path, not representative of an
-  actual pipeline execution (Claude call, piper-tts, ffmpeg all still unexercised in Lambda)
+- **Full end-to-end confirmation on the deployed Lambda** — the furthest a real
+  `aws lambda invoke` has gotten is TTS output; Gmail → Claude → TTS → SMTP with an actual
+  delivered email hasn't been confirmed yet. Active blocker on calling Phase 5 done — see
+  `docs/TODO.md` for the exact current state.
+- **EventBridge-triggered (as opposed to manually invoked) run** — not yet confirmed at all.
+- **Lambda memory/timeout sizing** — still unmeasured from a real successful full run; no
+  representative CloudWatch data exists yet since no invoke has completed the whole pipeline.
+
+Resolved since this section was last stale (kept here briefly for continuity, remove once this
+reads as current for a while): uncommitted local work (all committed 2026-08-26, see Repository
+above); ffmpeg on Amazon Linux 2023 (static binary, source switched twice — see
+ISSUES-ENCOUNTERED.md); piper binary architecture (x86_64 confirmed working across multiple real
+invokes, matches Lambda's default architecture).

@@ -75,14 +75,13 @@ class TestClaudeIntegration:
 
 class TestMailerIntegration:
 
-    def test_sendBriefing_deliversEmail(self, tmp_path):
+    def test_sendBriefing_deliversEmail(self):
         """
         Sends a real email via SMTP. Requires valid SMTP credentials in .env.
         Check your inbox after running this -- it will actually deliver.
         """
         from src.mailer import sendBriefing
 
-        fakeMp3 = tmp_path / "briefing.mp3"
-        fakeMp3.write_bytes(b"\xff\xfb\x00")
+        fakeMp3Bytes = b"\xff\xfb\x00"
 
-        sendBriefing("This is an integration test briefing from the tech-briefing pipeline.", str(fakeMp3))
+        sendBriefing("This is an integration test briefing from the tech-briefing pipeline.", fakeMp3Bytes)

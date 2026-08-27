@@ -59,11 +59,10 @@ DEVELOPER_EMAIL = os.getenv("DEVELOPER_EMAIL", RECIPIENT_EMAILS[0] if RECIPIENT_
 TTS_VOICE       = os.getenv("TTS_VOICE", "en_GB-jenny_dioco-medium")
 TTS_SPEED       = float(os.getenv("TTS_SPEED", "1.5"))
 TTS_MODEL_DIR   = "/app/models"
-# Same reasoning as LOG_PATH in logger.py: the relative "data/" dir doesn't exist on
-# Lambda's read-only filesystem outside /tmp. Missed on the first Lambda fix pass --
-# only surfaced via a real `aws lambda invoke` once Gmail/Claude/TTS-binary issues were
-# already fixed and the pipeline actually reached this line (2026-08-26).
-TTS_OUTPUT_PATH = "/tmp/briefing.mp3" if IS_LAMBDA else os.path.join("data", "briefing.mp3")
+# No TTS_OUTPUT_PATH -- the MP3 is only ever attached to the outgoing email and never
+# read again afterward, so convertToMp3() pipes ffmpeg's output straight into memory
+# instead of writing a file. Sidesteps the Lambda read-only-filesystem problem entirely
+# rather than routing around it with a /tmp path (see docs/ISSUES-ENCOUNTERED.md).
 
 # --- Secrets: ANTHROPIC_API_KEY, SMTP_PASSWORD, Gmail OAuth token ---
 # Local/container dev reads these from .env like everything else above. Lambda has no
