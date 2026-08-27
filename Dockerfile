@@ -42,11 +42,20 @@ ENV LD_LIBRARY_PATH="/usr/local/lib/piper:${LD_LIBRARY_PATH}"
 # AL2023's default dnf repos don't carry ffmpeg (licensing), so a self-contained
 # static binary (no shared-library dependencies of its own) is downloaded instead --
 # the standard workaround for getting ffmpeg into a Lambda container image.
-RUN wget -q "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" \
+# Was johnvansickle.com/ffmpeg (see docs/DECISIONS.md) until the 2026-08-26 deploy build
+# failed there: "xz: (stdin): File format not recognized" after a suspiciously instant
+# (0.5s) download of what should be an 80MB+ file -- that host returned a small
+# error/challenge response to GitHub Actions' runner IPs instead of the real binary, even
+# though the same URL serves the real file fine from a normal client. Switched to
+# BtbN/FFmpeg-Builds, whose release assets are hosted on GitHub's own release CDN --
+# same infra the Action is already downloading from, so no cross-host blocking risk.
+# Archive layout differs from johnvansickle's (binary lives under bin/, not at the top
+# level) -- adjusted the mv path below accordingly.
+RUN wget -q "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz" \
     -O /tmp/ffmpeg.tar.xz \
     && mkdir -p /tmp/ffmpeg-extract \
     && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg-extract --strip-components=1 \
-    && mv /tmp/ffmpeg-extract/ffmpeg /usr/local/bin/ffmpeg \
+    && mv /tmp/ffmpeg-extract/bin/ffmpeg /usr/local/bin/ffmpeg \
     && chmod +x /usr/local/bin/ffmpeg \
     && rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-extract
 

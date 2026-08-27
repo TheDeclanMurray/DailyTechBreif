@@ -136,3 +136,27 @@ made), with the date. Append-only — entries are never edited or removed once a
   made Lambda-aware. Grepped for every other relative-path/`os.makedirs()` call in `src/` this
   time before concluding it was the last one. **Resolved same day**: `TTS_OUTPUT_PATH` is now
   `/tmp/briefing.mp3` under `IS_LAMBDA`, matching `LOG_PATH`'s existing pattern.
+
+- **(2026-08-26) `deploy` job's Docker build step failed: `xz: (stdin): File format not
+  recognized`, `tar: Child returned status 1`.** The static ffmpeg download step in
+  `Dockerfile` finished in 0.5s -- far too fast for the real ~80MB tarball -- meaning
+  `wget` saved a small error/challenge response instead of the actual file. The same URL
+  (`johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz`) served the real
+  file fine when fetched from a normal client outside GitHub Actions (confirmed via a
+  direct fetch, which pulled 10MB+ before being cut off by an unrelated size limit --
+  proof the file itself is fine), so the difference is specifically GitHub Actions'
+  runner IPs getting blocked or challenged by that host. johnvansickle.com is a
+  single-operator site known to be defensive about automated/datacenter traffic; this
+  hadn't surfaced before because every prior verification of this step was a local
+  `docker build` from a residential/office IP, never from an actual Actions runner.
+  **Resolved same day**: switched to BtbN/FFmpeg-Builds
+  (`github.com/BtbN/FFmpeg-Builds/releases`), whose static Linux builds are hosted as
+  GitHub release assets -- same infra the Action already pulls from, so no cross-host
+  blocking risk. Archive layout differs (binary under `bin/ffmpeg`, not at the tarball
+  root), so the extraction path in `Dockerfile` was adjusted too. Verified via a real
+  local `docker compose build` followed by running the extracted binary's `-version`
+  inside the built image before pushing. Tradeoff worth noting: BtbN publishes rolling
+  "master" builds rather than johnvansickle's versioned releases, so the exact ffmpeg
+  build isn't pinned across rebuilds -- acceptable for now since this project only uses
+  the basic `atempo` filter, but worth revisiting if a future ffmpeg update ever changes
+  behavior unexpectedly.
