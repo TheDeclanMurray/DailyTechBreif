@@ -20,7 +20,8 @@ state noted here previously was resolved same-day, 2026-08-26.)
 - **Language:** Python 3.12
 - **Claude API** (`claude-sonnet-4-6`) — summarizes newsletter emails into a spoken-style
   briefing script, with prompt caching on the email content block
-- **Gmail API** (OAuth2, `gmail.readonly`) — source emails
+- **Gmail API** (OAuth2, `gmail.modify` — upgraded from `gmail.readonly` 2026-08-28 to allow
+  labeling processed messages, see DECISIONS.md) — source emails
 - **piper-tts + ffmpeg** — briefing text → MP3
 - **SMTP (587/STARTTLS)** — delivery, with a Gmail App Password
 

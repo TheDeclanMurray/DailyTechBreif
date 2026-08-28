@@ -1,7 +1,7 @@
 # Gmail API Setup — Step-by-Step
 
 Follow these steps once to create a `credentials.json` file that gives the pipeline
-read-only access to your Gmail inbox.
+access to your Gmail inbox (read messages and apply the `tech-briefing/processed` label).
 
 ---
 
@@ -31,8 +31,11 @@ read-only access to your Gmail inbox.
    - **User support email**: your Gmail address
    - **Developer contact email**: your Gmail address
 4. Click **Save and Continue** through the Scopes and Test Users screens
-   - On **Scopes**: click **Add or Remove Scopes** → search for `gmail.readonly` →
-     tick it → **Update** → **Save and Continue**
+   - On **Scopes**: click **Add or Remove Scopes** → search for `gmail.modify` →
+     tick it → **Update** → **Save and Continue**. `gmail.modify` is required (not just
+     `gmail.readonly`) because the pipeline applies a `tech-briefing/processed` label to
+     each email once it's been summarized, to avoid re-summarizing it on the next run.
+     Google shows a more sensitive-data consent warning for `modify` — that's expected.
    - On **Test Users**: click **Add Users** → add your Gmail address → **Save and Continue**
 5. Click **Back to Dashboard**
 
@@ -109,5 +112,24 @@ You should see `test_buildGmailService_returnsServiceObject PASSED`.
 ## Security Reminders
 
 - `credentials.json` and `token.json` are in `.gitignore` and `.claudeignore`.
-- Never commit them. Never share them. They grant read access to your Gmail inbox.
-- The OAuth scope is `gmail.readonly` — the pipeline cannot send, delete, or modify emails.
+- Never commit them. Never share them. They grant access to your Gmail inbox.
+- The OAuth scope is `gmail.modify` — the pipeline can read messages and add/remove labels
+  (specifically, it applies its own `tech-briefing/processed` label after summarizing an
+  email). It still cannot send, delete, or read/modify emails outside the Gmail API's
+  `modify` permission set.
+
+## Upgrading an Existing Setup from `gmail.readonly` to `gmail.modify`
+
+If you set this pipeline up before 2026-08-28, your `token.json` was issued under the old
+`gmail.readonly` scope and Gmail will reject label-modifying calls against it. To upgrade:
+
+1. Make sure your OAuth consent screen's Scopes include `gmail.modify` (Step 3 above) —
+   if you only ever added `gmail.readonly`, add `gmail.modify` there now (you don't need to
+   remove `gmail.readonly`, `gmail.modify` is a superset).
+2. Delete the old `data/token.json`.
+3. Re-run Step 5 (`docker compose run --rm --service-ports auth`) to re-consent and get a
+   token with the new scope.
+4. If deployed to Lambda, the SSM `GMAIL_TOKEN_JSON` parameter also needs updating with the
+   new token's contents — `src/auth.py` only ever writes the local `data/token.json` file,
+   it doesn't touch SSM, so push it manually:
+   `aws ssm put-parameter --name "<SSM_PARAMETER_PREFIX>/GMAIL_TOKEN_JSON" --type SecureString --overwrite --value "$(cat data/token.json)"`

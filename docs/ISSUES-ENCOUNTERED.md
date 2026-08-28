@@ -160,3 +160,18 @@ made), with the date. Append-only — entries are never edited or removed once a
   build isn't pinned across rebuilds -- acceptable for now since this project only uses
   the basic `atempo` filter, but worth revisiting if a future ffmpeg update ever changes
   behavior unexpectedly.
+
+- **(2026-08-28) A local dry run of the Gmail-labeling feature completed "successfully" and sent
+  a real email, but had actually run stale pre-edit code and never touched labeling at all.**
+  After adding `getOrCreateProcessedLabel()`/`markEmailsAsProcessed()` to `gmail_client.py`, only
+  `docker compose build auth` was run explicitly (to fix an unrelated WORKDIR bug) -- the separate
+  `tech-briefing` service image was never rebuilt, so `docker compose run --rm tech-briefing`
+  silently ran the image's stale `COPY src/ ./src/` layer from before the labeling code existed.
+  The run completed with exit code 0 and delivered a real briefing email, giving every surface
+  appearance of success; the only tell was the total absence of the new code's unconditional log
+  lines (`"Marked %d email(s) as processed."` and the label-creation line). **Resolved same day**:
+  ran `docker compose build tech-briefing` explicitly, then verified labeling with a standalone
+  script (`fetchNewsletterEmails()` -> `markEmailsAsProcessed()` -> re-fetch to confirm exclusion)
+  that exercises only the Gmail API calls, avoiding a second real send. Confirms a Compose service
+  finishing successfully is not proof its image contains current code -- `docker compose build`
+  must be run per-service explicitly after a source change, `run` alone never triggers a rebuild.

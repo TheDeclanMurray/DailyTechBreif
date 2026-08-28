@@ -25,8 +25,16 @@ SSM_PARAMETER_PREFIX = os.getenv("SSM_PARAMETER_PREFIX", "")
 CREDENTIALS_PATH = os.path.join("data", "credentials.json")
 TOKEN_PATH        = os.path.join("data", "token.json")
 
-# Gmail OAuth2 scopes — read-only is enough for Phase 1
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+# Gmail OAuth2 scopes — upgraded from gmail.readonly to gmail.modify (2026-08-28) so the
+# pipeline can label a message as processed once summarized, see PROCESSED_LABEL_NAME below.
+# Any token.json issued under the old readonly-only scope must be re-authed (delete
+# TOKEN_PATH and re-run the auth flow) -- Google rejects modify calls against an old token.
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+
+# Gmail label applied to a message once it's been summarized, so the next run's search
+# query can exclude it and avoid re-summarizing the same newsletter (see
+# gmail_client.py's getOrCreateProcessedLabel()/buildSearchQuery()).
+PROCESSED_LABEL_NAME = "tech-briefing/processed"
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
@@ -34,8 +42,9 @@ CLAUDE_MODEL = "claude-sonnet-4-6"
 _raw_senders      = os.getenv("NEWSLETTER_SENDERS", "")
 NEWSLETTER_SENDERS = [s.strip() for s in _raw_senders.split(",") if s.strip()]
 
-# How many days back to search Gmail
-LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "1"))
+# How many days back to search Gmail -- default kept in sync with infra/variables.tf's
+# lookback_days (also 4), so a missing env var behaves the same locally and on Lambda.
+LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "4"))
 
 # SMTP -- for Phase 3 email delivery. SMTP_PASSWORD is a secret -- see the Secrets
 # section below, which sets it (and ANTHROPIC_API_KEY) from .env or SSM depending on

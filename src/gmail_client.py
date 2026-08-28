@@ -20,6 +20,7 @@ from src.config import (
     GMAIL_SCOPES,
     NEWSLETTER_SENDERS,
     LOOKBACK_DAYS,
+    PROCESSED_LABEL_NAME,
     persistGmailToken,
 )
 
@@ -69,6 +70,8 @@ def buildGmailService():
 def buildSearchQuery(senderEmail):
     """
     Constructs a Gmail search query for a specific sender within LOOKBACK_DAYS.
+    Excludes messages already tagged with PROCESSED_LABEL_NAME, so a message summarized
+    on a previous run doesn't get re-fetched and re-summarized on the next one.
     @param senderEmail (str) - sender address to filter on
     @returns (str) Gmail query string
     @throws ValueError if senderEmail is not a valid address
@@ -78,7 +81,56 @@ def buildSearchQuery(senderEmail):
 
     cutoffDate = datetime.date.today() - datetime.timedelta(days=LOOKBACK_DAYS)
     dateStr = cutoffDate.strftime("%Y/%m/%d")
-    return f"from:{senderEmail} after:{dateStr}"
+    # Gmail's search syntax quotes a label name containing a "/" and negates it with "-".
+    return f"from:{senderEmail} after:{dateStr} -label:\"{PROCESSED_LABEL_NAME}\""
+
+
+def getOrCreateProcessedLabel(service):
+    """
+    Finds the Gmail label id for PROCESSED_LABEL_NAME, creating the label if it doesn't
+    exist yet. Gmail labels are per-account, so this only actually creates something on
+    the very first run after upgrading to gmail.modify.
+    @param service (googleapiclient.discovery.Resource) - authenticated Gmail service
+    @returns (str) the label's id, for use in messages().modify()'s addLabelIds
+    @throws HttpError if the Gmail API list/create call fails
+    """
+    existing = service.users().labels().list(userId="me").execute().get("labels", [])
+    match = next((l for l in existing if l["name"] == PROCESSED_LABEL_NAME), None)
+    if match:
+        return match["id"]
+
+    # First run since the scope upgrade -- label doesn't exist yet, create it.
+    # labelListVisibility/messageListVisibility "show" keeps it visible in the Gmail UI
+    # sidebar/inbox rather than hidden, so it's inspectable if something looks wrong.
+    log.info("Gmail label '%s' not found -- creating it.", PROCESSED_LABEL_NAME)
+    created = service.users().labels().create(
+        userId="me",
+        body={
+            "name": PROCESSED_LABEL_NAME,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        },
+    ).execute()
+    return created["id"]
+
+
+def markMessageProcessed(service, messageId, labelId):
+    """
+    Applies the processed label to a single message so future queries skip it.
+    @param service (googleapiclient.discovery.Resource) - authenticated Gmail service
+    @param messageId (str) - Gmail message id to label
+    @param labelId (str) - label id from getOrCreateProcessedLabel()
+    @returns None
+    @throws ValueError if messageId or labelId is empty
+    """
+    if not messageId:
+        raise ValueError("messageId must be a non-empty string")
+    if not labelId:
+        raise ValueError("labelId must be a non-empty string")
+
+    service.users().messages().modify(
+        userId="me", id=messageId, body={"addLabelIds": [labelId]}
+    ).execute()
 
 
 def extractPlainText(payload):
@@ -164,6 +216,7 @@ def fetchNewsletterEmails():
                 continue
 
             allEmails.append({
+                "id":      msg["id"],
                 "sender":  sender,
                 "subject": subject,
                 "date":    date,
@@ -172,3 +225,32 @@ def fetchNewsletterEmails():
 
     log.info("Total emails fetched: %d", len(allEmails))
     return allEmails
+
+
+def markEmailsAsProcessed(emails):
+    """
+    Labels each of the given emails as processed in Gmail, so buildSearchQuery()
+    excludes them on the next run. Deliberately called only AFTER a briefing has been
+    successfully delivered (see main.py) -- labeling at fetch time instead would mark an
+    email as handled even if summarization or delivery failed later, permanently losing
+    it from future runs.
+    @param emails (list[dict]) - email dicts as returned by fetchNewsletterEmails(),
+        each must have an "id" key (the Gmail message id)
+    @returns None
+    @throws ValueError if emails is empty
+    """
+    if not emails:
+        raise ValueError("emails must be a non-empty list")
+
+    service = buildGmailService()
+    labelId = getOrCreateProcessedLabel(service)
+
+    for email in emails:
+        try:
+            markMessageProcessed(service, email["id"], labelId)
+        except HttpError as e:
+            # Non-fatal -- worst case this one email gets re-summarized next run,
+            # which is the same behavior as before this feature existed.
+            log.warning("Could not label message id=%s as processed: %s", email["id"], e)
+
+    log.info("Marked %d email(s) as processed.", len(emails))

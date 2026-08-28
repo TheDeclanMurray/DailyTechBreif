@@ -76,6 +76,19 @@ says so and points back at the one it supersedes; don't rewrite history.
   this GitHub feature is for (surviving/rejecting a rename or repo recreation correctly), and the
   IDs are effectively permanent for the life of the repo.
 
+- **(2026-08-28) Gmail OAuth scope upgraded from `gmail.readonly` to `gmail.modify`, and
+  re-processing avoided via a Gmail label rather than marking messages read or moving them** —
+  resolves the Tue-Fri re-summarization problem noted in `docs/TODO.md` (2026-08-24). Chose
+  labeling (`tech-briefing/processed`, applied via `gmail_client.markEmailsAsProcessed()`) over
+  the other two options considered — mark-as-read + `is:unread` query, or archive/move out of the
+  searched folder — because it's reversible and inspectable in the Gmail UI without touching the
+  user's own read/unread state or mailbox organization. The label is applied only AFTER a
+  briefing is successfully delivered (`main.py` step 6, not inside `fetchNewsletterEmails()`), so
+  a failure earlier in the pipeline leaves the source emails unlabeled and eligible for the next
+  run instead of silently losing them. `gmail.modify` is required because Gmail's API doesn't
+  allow adding labels under `gmail.readonly`. Any `token.json` issued before this change must be
+  regenerated via the auth flow — see `docs/GMAIL_SETUP.md`'s upgrade section.
+
 - **(2026-08-26) Gmail token refresh writes back to SSM, not just the local file** — added
   `config.persistGmailToken()`, called from `gmail_client.py`'s refresh path, which writes to
   `TOKEN_PATH` locally always and additionally `ssm:PutParameter`s the refreshed token when

@@ -16,13 +16,12 @@ not here). Add the date an item is opened.
   check CloudWatch logs after the next scheduled Mon–Fri run to make sure a real
   EventBridge-triggered invocation goes cleanly too. Then this item can come out.
 
-- [ ] **(2026-08-26) Add a backstop alert for crashes the pipeline's own alerting can't catch** —
-  `sendFailureAlert()` only runs from inside `main.py`'s `try/except`. The current crash happens
-  at import time, before that block is ever reached, so two full days of failed runs produced zero
-  notification to anyone. Once the item above is fixed this exact case goes away, but the same gap
-  would reopen for any future container-init-time failure. Consider a CloudWatch Alarm on the
-  Lambda's `Errors` metric (→ SNS → email) as a defense-in-depth backstop that doesn't depend on
-  the pipeline's own code running at all.
+- [ ] **(2026-08-28) Confirm the CloudWatch alarm email subscription got confirmed** —
+  `infra/alarms.tf` (applied 2026-08-28) adds a CloudWatch Alarm on the Lambda's `Errors` metric
+  → SNS topic → email, as a backstop that doesn't depend on `sendFailureAlert()`/`main.py`'s own
+  `try/except` ever running (e.g. an import-time crash). SNS email subscriptions require clicking
+  a confirmation link AWS sends on subscribe; the subscription stays `PendingConfirmation` (and
+  silently won't deliver) until that's done. Check the inbox for `var.my_email` and confirm.
 
 - [ ] **(2026-08-21) Fix prompt caching on the system prompt** — [src/summarizer.py](../src/summarizer.py)
   sends the ~700-word `SYSTEM_PROMPT` in the `system` field with a comment claiming Claude caches
@@ -41,20 +40,16 @@ not here). Add the date an item is opened.
   usage — Lambda bills by memory × duration, so overprovisioning here costs real money for
   no benefit.
 
-- [ ] **(2026-08-24) Mark processed emails so they aren't re-summarized on the next run** —
-  [src/gmail_client.py](../src/gmail_client.py)'s `build_query()` (line 79) selects emails purely
-  by `after:<lookback_days-ago>`, with no record of which messages a previous run already
-  processed. `lookback_days` defaults to `4` specifically so a Monday run still catches
-  newsletters sent over the weekend — but now that `infra/variables.tf`'s `schedule_expression`
-  runs Mon-Fri, that same 4-day window means Tue-Fri runs re-fetch and re-summarize emails
-  already covered by the previous day's run. Fix by having the pipeline mark each email as
-  handled once summarized, via one of: (a) mark as read and switch the query to `is:unread`,
-  (b) apply a Gmail label (e.g. `tech-briefing/processed`) and exclude labeled messages from the
-  query, or (c) move/archive processed messages out of the searched folder. A label is probably
-  safest — reversible and inspectable — but any of the three removes the re-processing risk.
-  Needs a decision recorded in `docs/DECISIONS.md` once picked, since it changes what the Gmail
-  OAuth scope needs to allow (`gmail.readonly` → `gmail.modify` for labeling/marking-read, or add
-  the Gmail API's `modify` scope specifically — see `GMAIL_SCOPES` in `src/config.py`).
+- [ ] **(2026-08-28) Confirm the deployed Lambda can label messages with the new token** — the
+  re-authed `gmail.modify` token has been pushed to the SSM `GMAIL_TOKEN_JSON` parameter
+  (`aws ssm put-parameter ... --overwrite`, done 2026-08-28), and labeling is confirmed working
+  end to end locally (see `CLAUDE.md` Progress). Still needed: the labeling *code* itself
+  (`gmail_client.py`'s `markEmailsAsProcessed()` etc.) isn't deployed yet — it needs to ship via
+  the `deploy` CI job first (see the item above). Once that's out, do one manual `aws lambda
+  invoke` to confirm the Lambda labels messages successfully too, then this item can come out.
+  Note: on Windows Git Bash, a leading-slash SSM parameter name gets mangled by MSYS path
+  conversion ("Parameter name must be a fully qualified name") — prefix the command with
+  `MSYS_NO_PATHCONV=1` to avoid that.
 
 - [ ] **(2026-08-24) Confirm the ECR lifecycle policy actually deletes images** —
   [infra/ecr.tf](../infra/ecr.tf) now has two rules: expire untagged images after 14 days

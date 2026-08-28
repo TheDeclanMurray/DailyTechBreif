@@ -9,7 +9,7 @@ import logging
 import traceback
 
 from src.logger import setupLogging, readLogTail
-from src.gmail_client import fetchNewsletterEmails
+from src.gmail_client import fetchNewsletterEmails, markEmailsAsProcessed
 from src.summarizer import summarizeEmails
 from src.tts import convertToMp3
 from src.mailer import sendBriefing, sendFailureAlert
@@ -48,6 +48,11 @@ def main():
 
     # Step 5: Email MP3 and written script to all recipients
     sendBriefing(briefing, mp3Bytes)
+
+    # Step 6: Only NOW mark the source emails as processed -- after delivery has
+    # actually succeeded, so a failure in any earlier step leaves them unlabeled and
+    # eligible to be picked up (and not silently lost) on the next run.
+    markEmailsAsProcessed(emails)
 
     log.info("Pipeline complete.")
 

@@ -7,7 +7,9 @@ not a reason to silently rewrite this file to match.
 ## What this is
 
 A personal automation pipeline that, on a weekday (Mon–Fri) schedule:
-1. Reads a fixed, pre-configured list of newsletter senders from one Gmail inbox (read-only)
+1. Reads a fixed, pre-configured list of newsletter senders from one Gmail inbox (`gmail.modify`
+   scope — read access plus the ability to apply its own `tech-briefing/processed` label so a
+   summarized email isn't re-fetched; see DECISIONS.md, 2026-08-28. Still not send/delete access.)
 2. Summarizes their recent emails into a spoken-style briefing script using Claude
 3. Converts that script to an MP3 via piper-tts
 4. Emails the MP3 to a small, fixed recipient list

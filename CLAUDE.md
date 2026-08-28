@@ -107,6 +107,39 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
   run manually, not in CI or the `test` service: `python -m pytest src/tests/integration_tests.py -v`
 
 ## Progress
+- [x] **Gmail label-based processed-tracking, code side (2026-08-28)** — `GMAIL_SCOPES` upgraded
+      to `gmail.modify`; `gmail_client.py` gained `getOrCreateProcessedLabel()`,
+      `markMessageProcessed()`, and `markEmailsAsProcessed()`; `buildSearchQuery()` now excludes
+      `-label:"tech-briefing/processed"`; `main.py` calls `markEmailsAsProcessed()` only after
+      `sendBriefing()` succeeds, so a failure earlier in the pipeline leaves emails unlabeled and
+      eligible for the next run. 7 new unit tests added, all 44 passing via `docker compose run
+      --rm test`. **Re-auth done and labeling confirmed working end to end locally (2026-08-28)**
+      — local `docker compose run --rm --service-ports auth` completed with the new `gmail.modify`
+      scope (verified via `token.json`'s `scopes` field); a standalone verification run against
+      the real Gmail account (fetch → label 11 real unprocessed emails → re-fetch) confirmed the
+      `tech-briefing/processed` label was created and all 11 were excluded from the next query,
+      with zero Claude/TTS/SMTP calls made. **Token pushed to SSM (2026-08-28)** — the re-authed
+      `gmail.modify` token is now live in the `GMAIL_TOKEN_JSON` SSM parameter. **Not yet done:
+      the labeling code itself hasn't shipped to Lambda yet** (this commit is the first push of
+      it), so confirming the deployed Lambda can label still needs one more manual invoke after
+      `deploy` runs — see Known Issues below and `docs/TODO.md`. Note: the
+      first attempt at this local verification looked successful (real email sent, exit code 0)
+      but had actually run a stale pre-edit `tech-briefing` image and never touched the labeling
+      code at all — see `docs/ISSUES-ENCOUNTERED.md`'s 2026-08-28 entry for the full diagnosis.
+- [x] **CloudWatch Alarm backstop on Lambda `Errors` → SNS → email (2026-08-28)** —
+      `infra/alarms.tf` added and applied: an `aws_cloudwatch_metric_alarm` on the Lambda's
+      `Errors` metric (any error in a 5-minute window trips it) publishes to a new SNS topic,
+      which emails `var.my_email`. Exists specifically to catch the failure mode
+      `sendFailureAlert()` can't — a crash before `main.py`'s `try/except` is ever reached (e.g.
+      import-time or container-init failures), which is what silently ate two days of runs
+      earlier. **Not yet confirmed: the SNS email subscription needs its confirmation link
+      clicked** before it will actually deliver — see `docs/TODO.md`.
+- [x] **`LOOKBACK_DAYS` default synced to 4 across the codebase (2026-08-28)** — the real value in
+      use (both local `.env` and `infra/variables.tf`'s `lookback_days`) has been `4` for a while,
+      but `src/config.py`'s fallback default, `.env.example`, and `CLAUDE.md` still said `1`.
+      Updated all three to `4` so a missing env var now behaves the same as the value actually
+      running everywhere; not a behavior change to any deployed/local config, just removing
+      misleading fallback/docs drift.
 - [x] Project structure and Docker Compose setup
 - [x] .claudeignore, .gitignore, .env.example
 - [x] requirements.txt
@@ -184,12 +217,16 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
 All in `src/config.py`:
 - `CREDENTIALS_PATH` = `data/credentials.json` (local/auth.py only, no Lambda variant needed)
 - `TOKEN_PATH`        = `data/token.json` locally, `/tmp/token.json` under `IS_LAMBDA`
-- `GMAIL_SCOPES`      = `["https://www.googleapis.com/auth/gmail.readonly"]`
+- `GMAIL_SCOPES`      = `["https://www.googleapis.com/auth/gmail.modify"]` (upgraded from
+  `gmail.readonly` 2026-08-28 — see Known Issues below)
+- `PROCESSED_LABEL_NAME` = `"tech-briefing/processed"` — Gmail label applied to a message once
+  summarized, so it's excluded from the next run's search query
 - `OAUTH_LOCAL_PORT`  = `8080` (forwarded in docker-compose for auth flow)
 - `CLAUDE_MODEL`      = `claude-sonnet-4-6`
 - `MAX_RESULTS_PER_SENDER` = `5` (in gmail_client.py)
 - `MAX_CONTENT_CHARS` = `150_000` (in summarizer.py — truncation limit)
-- `LOOKBACK_DAYS`     = from `.env`, default `1`
+- `LOOKBACK_DAYS`     = from `.env` locally / Terraform's `lookback_days` var on Lambda, default `4`
+  (kept in sync between `src/config.py`'s fallback, `.env.example`, and `infra/variables.tf`)
 - `NEWSLETTER_SENDERS`= from `.env`, comma-separated
 - `TTS_VOICE`         = from `.env`, default `en_GB-jenny_dioco-medium` (must match a model baked
   into the Dockerfile)
@@ -202,6 +239,11 @@ All in `src/config.py`:
   `/daily-tech-brief`
 
 ## Known Issues & Decisions
+- **SSM token still on the old `gmail.readonly` scope (2026-08-28, not yet done)**: local
+  `token.json` was re-authed and confirmed working with `gmail.modify`, but the SSM
+  `GMAIL_TOKEN_JSON` parameter used by the deployed Lambda is still the pre-upgrade token and
+  will be rejected by the label-applying calls. See `docs/TODO.md` and `docs/GMAIL_SETUP.md`'s
+  upgrade section.
 - **OAuth2 in Docker**: Interactive browser redirect can't run headlessly. Solution: the
   `auth` Docker Compose service forwards port 8080 so the consent redirect works. Run
   it once to generate `token.json`, then the main service runs without user interaction.

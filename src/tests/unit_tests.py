@@ -9,7 +9,13 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from src.gmail_client import buildSearchQuery, extractPlainText
+from src.gmail_client import (
+    buildSearchQuery,
+    extractPlainText,
+    getOrCreateProcessedLabel,
+    markMessageProcessed,
+    markEmailsAsProcessed,
+)
 from src.summarizer import formatEmailsForPrompt
 from src.tts import convertToMp3, _validateSpeed
 from src.mailer import _buildSubject, _buildMessage, sendBriefing
@@ -44,6 +50,127 @@ class TestBuildSearchQuery:
     def test_noneSender_raisesValueError(self):
         with pytest.raises((ValueError, AttributeError)):
             buildSearchQuery(None)
+
+    def test_validSender_excludesProcessedLabel(self):
+        # Query must exclude already-labeled messages so they aren't re-summarized.
+        query = buildSearchQuery("test@example.com")
+        assert '-label:"tech-briefing/processed"' in query
+
+
+# ---------------------------------------------------------------------------
+# getOrCreateProcessedLabel / markMessageProcessed / markEmailsAsProcessed
+# ---------------------------------------------------------------------------
+
+class _FakeLabelsResource:
+    """Minimal stand-in for service.users().labels() -- tracks create() calls."""
+
+    def __init__(self, existingLabels):
+        self._existingLabels = existingLabels
+        self.createCalls = []
+
+    def list(self, userId):
+        return _FakeExecutable({"labels": self._existingLabels})
+
+    def create(self, userId, body):
+        self.createCalls.append(body)
+        return _FakeExecutable({"id": "NEWLABEL123", "name": body["name"]})
+
+
+class _FakeMessagesResource:
+    """Minimal stand-in for service.users().messages() -- tracks modify() calls."""
+
+    def __init__(self):
+        self.modifyCalls = []
+
+    def modify(self, userId, id, body):
+        self.modifyCalls.append({"id": id, "body": body})
+        return _FakeExecutable({})
+
+
+class _FakeExecutable:
+    """Mimics the googleapiclient pattern of chaining .execute() on every call."""
+
+    def __init__(self, result):
+        self._result = result
+
+    def execute(self):
+        return self._result
+
+
+class _FakeUsersResource:
+    def __init__(self, labelsResource, messagesResource):
+        self._labels = labelsResource
+        self._messages = messagesResource
+
+    def labels(self):
+        return self._labels
+
+    def messages(self):
+        return self._messages
+
+
+class _FakeService:
+    def __init__(self, existingLabels=None):
+        self._labels = _FakeLabelsResource(existingLabels or [])
+        self._messages = _FakeMessagesResource()
+
+    def users(self):
+        return _FakeUsersResource(self._labels, self._messages)
+
+
+class TestGetOrCreateProcessedLabel:
+
+    def test_labelAlreadyExists_returnsExistingId(self):
+        service = _FakeService(existingLabels=[{"id": "EXISTING1", "name": "tech-briefing/processed"}])
+        labelId = getOrCreateProcessedLabel(service)
+        assert labelId == "EXISTING1"
+        assert service._labels.createCalls == []  # never created -- already existed
+
+    def test_labelMissing_createsAndReturnsNewId(self):
+        service = _FakeService(existingLabels=[{"id": "OTHER", "name": "some-other-label"}])
+        labelId = getOrCreateProcessedLabel(service)
+        assert labelId == "NEWLABEL123"
+        assert len(service._labels.createCalls) == 1
+        assert service._labels.createCalls[0]["name"] == "tech-briefing/processed"
+
+
+class TestMarkMessageProcessed:
+
+    def test_validArgs_callsModifyWithLabelId(self):
+        service = _FakeService()
+        markMessageProcessed(service, "MSG123", "LABEL456")
+        assert len(service._messages.modifyCalls) == 1
+        call = service._messages.modifyCalls[0]
+        assert call["id"] == "MSG123"
+        assert call["body"]["addLabelIds"] == ["LABEL456"]
+
+    def test_emptyMessageId_raisesValueError(self):
+        with pytest.raises(ValueError):
+            markMessageProcessed(_FakeService(), "", "LABEL456")
+
+    def test_emptyLabelId_raisesValueError(self):
+        with pytest.raises(ValueError):
+            markMessageProcessed(_FakeService(), "MSG123", "")
+
+
+class TestMarkEmailsAsProcessed:
+
+    def test_emptyList_raisesValueError(self):
+        with pytest.raises(ValueError):
+            markEmailsAsProcessed([])
+
+    def test_validEmails_labelsEachOne(self, monkeypatch):
+        import src.gmail_client as gmail_client_module
+
+        service = _FakeService(existingLabels=[{"id": "L1", "name": "tech-briefing/processed"}])
+        monkeypatch.setattr(gmail_client_module, "buildGmailService", lambda: service)
+
+        emails = [{"id": "MSG1"}, {"id": "MSG2"}]
+        markEmailsAsProcessed(emails)
+
+        assert len(service._messages.modifyCalls) == 2
+        labeledIds = {call["id"] for call in service._messages.modifyCalls}
+        assert labeledIds == {"MSG1", "MSG2"}
 
 
 # ---------------------------------------------------------------------------
