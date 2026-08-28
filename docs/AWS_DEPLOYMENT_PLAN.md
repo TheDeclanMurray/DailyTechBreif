@@ -56,7 +56,7 @@ Amazon EventBridge Scheduler (cron)
         ├─▶ pulls OAuth token.json blob + secrets (Anthropic key, SMTP password) from SSM Parameter Store
         ├─▶ Gmail API ──▶ emails[]
         ├─▶ Claude API ──▶ briefing text
-        ├─▶ piper + ffmpeg (in /tmp) ──▶ briefing.mp3
+        ├─▶ piper (writes a temp WAV) + ffmpeg (streams MP3 to stdout) ──▶ briefing.mp3 (in-memory bytes, never touches disk — see DECISIONS.md 2026-08-27)
         ├─▶ SMTP (587/STARTTLS) ──▶ email with MP3 attachment
         ├─▶ writes refreshed token.json back to SSM (if rotated)
         └─▶ logs to CloudWatch Logs
@@ -208,8 +208,8 @@ Few-minute invocation on a weekday schedule: Lambda compute + ECR storage + SSM 
   architecture you choose.~~ Resolved: x86_64 confirmed working across multiple real
   `aws lambda invoke` calls, matches Lambda's default architecture (`infra/lambda.tf` leaves
   `architectures` unset).
-- **Ephemeral storage**: default `/tmp` is 512MB; check actual `briefing.mp3` + intermediate WAV
-  size (the existing `data/briefing.mp3` is ~3.7MB, so default should be plenty, but this still
-  hasn't been confirmed from a real Lambda run that reaches the SMTP step) and bump
-  `EphemeralStorage` config if needed.
+- ~~**Ephemeral storage**: default `/tmp` is 512MB; check actual `briefing.mp3` + intermediate WAV
+  size and bump `EphemeralStorage` config if needed.~~ Superseded 2026-08-27: the MP3 is no
+  longer written anywhere, including `/tmp` — only the intermediate WAV (piper's output, a few
+  MB at most) touches `/tmp` now, comfortably inside the 512MB default. See DECISIONS.md.
 - ~~**Timezone for the trigger**: EventBridge Scheduler cron expressions are UTC — pick and document the intended timezone explicitly (the current Ubuntu cron implicitly used server-local time).~~ Resolved: EventBridge *Scheduler* (as opposed to classic EventBridge Rules) takes an explicit IANA timezone alongside the cron expression, so no manual UTC conversion is needed — set to `America/Los_Angeles` in `infra/variables.tf`'s `schedule_timezone`, with `schedule_expression` set to weekdays at 07:00 (`cron(0 7 ? * MON-FRI *)`).

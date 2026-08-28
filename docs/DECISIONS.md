@@ -96,3 +96,23 @@ says so and points back at the one it supersedes; don't rewrite history.
   from SSM, forcing a redundant refresh call on every single invocation. This is what the
   `ignore_changes = [value]` comment on the `gmail_token` SSM parameter in `infra/ssm.tf` was
   already anticipating — it just wasn't implemented in code yet.
+
+- **(2026-08-27, commit `ab167b0`) MP3 is never written to disk anywhere, including `/tmp`** —
+  a scheduled Lambda run had crashed with `OSError: Read-only file system: 'data'` because
+  `TTS_OUTPUT_PATH` was still a relative path. Rather than just redirecting that write to
+  `/tmp` (matching `LOG_PATH`'s existing pattern), removed the disk write entirely: the MP3 is
+  only ever attached to the outgoing email and never read again afterward, so there was no
+  reason to persist it anywhere in the first place. `src/tts.py`'s `convertToMp3()` now has
+  ffmpeg stream the encoded MP3 to stdout and returns it as `bytes`; `mailer.py`/`main.py` were
+  updated to pass bytes straight through. `TTS_OUTPUT_PATH` was removed from `src/config.py`
+  entirely. This log wasn't updated at the time the change was made — noting it now for the
+  record (see `docs/ISSUES-ENCOUNTERED.md`'s 2026-08-26 `TTS_OUTPUT_PATH` entry and
+  `AWS_DEPLOYMENT_PLAN.md`'s Open Questions for what this superseded).
+
+- **(2026-08-28) CloudWatch Alarm on the Lambda's `Errors` metric added as a backstop** —
+  `infra/alarms.tf`: an `aws_sns_topic` + `aws_sns_topic_subscription` (email, `var.my_email`)
+  + `aws_cloudwatch_metric_alarm` watching `AWS/Lambda` `Errors` for the function. Exists because
+  `sendFailureAlert()` only ever runs from inside `main.py`'s own `try/except`, so it can't catch
+  a crash before that point is reached (import-time errors, container-init failures) — exactly
+  the failure mode that silently ate two days of runs in the 2026-08-26 incident (see
+  ISSUES-ENCOUNTERED.md). This alarm doesn't depend on the pipeline's own code running at all.
