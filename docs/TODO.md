@@ -4,36 +4,6 @@ Active items only — this is not a history. Once something is actually done, re
 worth keeping that it happened belongs in `CLAUDE.md`'s Progress section or `docs/DECISIONS.md`,
 not here). Add the date an item is opened.
 
-- [ ] **(2026-08-28) Confirm the CloudWatch alarm email subscription got confirmed** —
-  `infra/alarms.tf` (applied 2026-08-28) adds a CloudWatch Alarm on the Lambda's `Errors` metric
-  → SNS topic → email, as a backstop that doesn't depend on `sendFailureAlert()`/`main.py`'s own
-  `try/except` ever running (e.g. an import-time crash). SNS email subscriptions require clicking
-  a confirmation link AWS sends on subscribe; the subscription stays `PendingConfirmation` (and
-  silently won't deliver) until that's done. Check the inbox for `var.my_email` and confirm.
-
-- [ ] **(2026-08-27) Confirm the deployed Lambda completes the whole pipeline end to end, then
-  check a real EventBridge-triggered run too** — no real `aws lambda invoke` has actually
-  finished the full pipeline yet; each one so far has surfaced one more bug and gotten one step
-  further (Gmail → Claude → TTS all confirmed working individually, but the furthest any single
-  invoke has reached is TTS output, before `TTS_OUTPUT_PATH` was fixed — see
-  `docs/ISSUES-ENCOUNTERED.md`). That fix, plus a separate fix for the `deploy` job's Docker build
-  (johnvansickle.com blocking GitHub Actions runner IPs — switched to BtbN/FFmpeg-Builds), just
-  pushed (`152fb44`); next steps: (1) confirm this `deploy` run succeeds, (2) do one more manual
-  invoke to confirm real SMTP delivery with the actual MP3 attachment, (3) once that's confirmed,
-  check CloudWatch logs after the next scheduled Mon–Fri run to make sure a real
-  EventBridge-triggered invocation goes cleanly too. Then this item can come out.
-
-- [ ] **(2026-08-28) Confirm the deployed Lambda can label messages with the new token** — the
-  re-authed `gmail.modify` token has been pushed to the SSM `GMAIL_TOKEN_JSON` parameter
-  (`aws ssm put-parameter ... --overwrite`, done 2026-08-28), and labeling is confirmed working
-  end to end locally (see `CLAUDE.md` Progress). Still needed: the labeling *code* itself
-  (`gmail_client.py`'s `markEmailsAsProcessed()` etc.) isn't deployed yet — it needs to ship via
-  the `deploy` CI job first (see the item above). Once that's out, do one manual `aws lambda
-  invoke` to confirm the Lambda labels messages successfully too, then this item can come out.
-  Note: on Windows Git Bash, a leading-slash SSM parameter name gets mangled by MSYS path
-  conversion ("Parameter name must be a fully qualified name") — prefix the command with
-  `MSYS_NO_PATHCONV=1` to avoid that.
-
 - [ ] **(2026-08-21) Fix prompt caching on the system prompt** — [src/summarizer.py](../src/summarizer.py)
   sends the ~700-word `SYSTEM_PROMPT` in the `system` field with a comment claiming Claude caches
   it automatically after the first call. That's incorrect: Anthropic prompt caching only applies
@@ -68,3 +38,21 @@ not here). Add the date an item is opened.
   `open(LOG_PATH, "w").close()` before attaching the handler) so every run starts clean. If any
   history across runs is still wanted, consider rotating to `pipeline.log.1` before truncating
   instead of just discarding it.
+
+- [ ] **(2026-09-15) Verify the IMAP rewrite against the real mailbox on Lambda** —
+  `src/gmail_client.py` was rewritten from the Gmail API to IMAP + App Password, but it could
+  NOT be tested locally: the office network resets TLS on port 993 (see
+  `docs/ISSUES-ENCOUNTERED.md`). All 56 unit tests pass, which proves the parsing/label logic
+  but says nothing about whether the real connection, search, fetch and labeling work. After
+  `deploy` runs, do a manual `aws lambda invoke` and confirm in CloudWatch: login succeeds, the
+  All Mail folder resolves, emails are fetched, the briefing is delivered, and
+  `Marked N email(s) as processed` appears. Until that's seen, treat this as unproven — the
+  2026-08-28 entry in `CLAUDE.md` is a standing reminder of how convincing a green-looking run
+  can be when it never touched the new code.
+
+- [ ] **(2026-09-15) Check why the daily failure alert emails went unnoticed** —
+  `sendFailureAlert()` correctly emailed `dmurray.cobaltix@gmail.com` on every one of the seven
+  failed days and none were seen. That path is the pipeline's primary alerting mechanism and it
+  worked; the delivery or attention side didn't. Check spam/filters on that address, and
+  consider whether alerts should go somewhere noisier than the same inbox the briefing lands in.
+

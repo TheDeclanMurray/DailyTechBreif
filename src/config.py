@@ -18,18 +18,16 @@ IS_LAMBDA = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
 # env var (see infra/lambda.tf); irrelevant locally since IS_LAMBDA gates its use.
 SSM_PARAMETER_PREFIX = os.getenv("SSM_PARAMETER_PREFIX", "")
 
-# Paths — relative to /var/task inside the Lambda container, or the project root locally.
-# CREDENTIALS_PATH is only ever read by src/auth.py, which is run locally/via docker
-# compose only (Lambda can't do an interactive OAuth browser redirect), so it never
-# needs a Lambda-specific path. TOKEN_PATH does need one -- see the Lambda branch below.
-CREDENTIALS_PATH = os.path.join("data", "credentials.json")
-TOKEN_PATH        = os.path.join("data", "token.json")
-
-# Gmail OAuth2 scopes — upgraded from gmail.readonly to gmail.modify (2026-08-28) so the
-# pipeline can label a message as processed once summarized, see PROCESSED_LABEL_NAME below.
-# Any token.json issued under the old readonly-only scope must be re-authed (delete
-# TOKEN_PATH and re-run the auth flow) -- Google rejects modify calls against an old token.
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+# Gmail IMAP -- how the pipeline reads newsletters. Replaced the Gmail API's OAuth2
+# flow on 2026-09-15: gmail.modify is a Google "restricted" scope, so an External
+# consent screen had to either sit in Testing mode (where Google expires the refresh
+# token after exactly 7 days, which silently killed a week of briefings) or pass a paid
+# verification audit. An App Password has neither constraint. IMAP_USER/IMAP_PASSWORD
+# default to the SMTP pair because it's the same mailbox and the same App Password
+# works for both directions -- they're split out so a separate credential can be
+# dropped in later without touching any calling code. See docs/DECISIONS.md.
+IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
+IMAP_PORT = int(os.getenv("IMAP_PORT", "993"))
 
 # Gmail label applied to a message once it's been summarized, so the next run's search
 # query can exclude it and avoid re-summarizing the same newsletter (see
@@ -73,10 +71,12 @@ TTS_MODEL_DIR   = "/app/models"
 # instead of writing a file. Sidesteps the Lambda read-only-filesystem problem entirely
 # rather than routing around it with a /tmp path (see docs/ISSUES-ENCOUNTERED.md).
 
-# --- Secrets: ANTHROPIC_API_KEY, SMTP_PASSWORD, Gmail OAuth token ---
+# --- Secrets: ANTHROPIC_API_KEY, SMTP_PASSWORD ---
 # Local/container dev reads these from .env like everything else above. Lambda has no
-# .env file, so it fetches the same three values from SSM Parameter Store instead --
+# .env file, so it fetches the same two values from SSM Parameter Store instead --
 # see infra/ssm.tf for where they're seeded and infra/lambda.tf for SSM_PARAMETER_PREFIX.
+# The Gmail OAuth token parameter that used to live here is gone (2026-09-15) -- IMAP
+# reuses SMTP_PASSWORD, so there is no third secret and nothing to refresh at runtime.
 
 def _fetchSsmParameter(name, decrypt=True):
     """
@@ -97,56 +97,17 @@ def _fetchSsmParameter(name, decrypt=True):
     return response["Parameter"]["Value"]
 
 
-def persistGmailToken(tokenJson):
-    """
-    Persists a refreshed Gmail OAuth token so future runs can use it.
-
-    Always writes to the local TOKEN_PATH (what gmail_client.py reads from). When
-    running in Lambda, also writes the value back to SSM -- Lambda's filesystem is
-    ephemeral across cold starts, so without this every cold start would keep reusing
-    the pre-refresh token, forcing a redundant refresh call on every single invocation
-    instead of reusing a still-valid access token (see the ignore_changes note on the
-    gmail_token parameter in infra/ssm.tf, which exists specifically for this).
-
-    Args:
-        tokenJson (str): The token.json contents to persist, as returned by
-            google.oauth2.credentials.Credentials.to_json().
-
-    Returns:
-        None
-
-    Raises:
-        ValueError: If tokenJson is empty or whitespace-only.
-    """
-    if not tokenJson or not tokenJson.strip():
-        raise ValueError("tokenJson must be a non-empty JSON string")
-
-    # Local write happens either way -- gmail_client.py always reads from TOKEN_PATH,
-    # whether that's the real data/ dir locally or the /tmp bootstrap file in Lambda.
-    with open(TOKEN_PATH, "w") as f:
-        f.write(tokenJson)
-
-    if IS_LAMBDA:
-        boto3.client("ssm").put_parameter(
-            Name=f"{SSM_PARAMETER_PREFIX}/GMAIL_TOKEN_JSON",
-            Value=tokenJson,
-            Type="SecureString",
-            Overwrite=True,
-        )
-
-
 if IS_LAMBDA:
     ANTHROPIC_API_KEY = _fetchSsmParameter(f"{SSM_PARAMETER_PREFIX}/ANTHROPIC_API_KEY")
     SMTP_PASSWORD     = _fetchSsmParameter(f"{SSM_PARAMETER_PREFIX}/SMTP_PASSWORD")
-
-    # gmail_client.py reads token.json from TOKEN_PATH -- point it at Lambda's one
-    # writable location and seed it from SSM before anything tries to read it.
-    TOKEN_PATH = "/tmp/token.json"
-    with open(TOKEN_PATH, "w") as f:
-        f.write(_fetchSsmParameter(f"{SSM_PARAMETER_PREFIX}/GMAIL_TOKEN_JSON"))
 else:
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
     SMTP_PASSWORD     = os.getenv("SMTP_PASSWORD", "")
+
+# Resolved after the secrets block above because they fall back to the SMTP pair, which
+# isn't known until SMTP_PASSWORD has been read from .env or SSM.
+IMAP_USER     = os.getenv("IMAP_USER") or SMTP_USER
+IMAP_PASSWORD = os.getenv("IMAP_PASSWORD") or SMTP_PASSWORD
 
 # System prompt — defines Claude's persona and output rules.
 # Kept here as a constant so it is easy to iterate on without touching summarizer.py.

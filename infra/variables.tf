@@ -72,7 +72,7 @@ variable "lambda_memory_mb" {
 
 variable "lambda_timeout_seconds" {
   type    = number
-  default = 300
+  default = 600
 }
 
 variable "log_retention_days" {

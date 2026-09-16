@@ -6,20 +6,24 @@ Run with: python -m pytest src/tests/unit_tests.py -v
 import pytest
 import sys
 import os
+import email
+import imaplib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from src.gmail_client import (
     buildSearchQuery,
     extractPlainText,
-    getOrCreateProcessedLabel,
+    decodeMimeHeader,
+    findAllMailFolder,
+    findUidByMessageId,
     markMessageProcessed,
     markEmailsAsProcessed,
+    _parseGmailMessageId,
 )
 from src.summarizer import formatEmailsForPrompt
 from src.tts import convertToMp3, _validateSpeed
 from src.mailer import _buildSubject, _buildMessage, sendBriefing
-from src.config import persistGmailToken
 
 
 # ---------------------------------------------------------------------------
@@ -58,99 +62,133 @@ class TestBuildSearchQuery:
 
 
 # ---------------------------------------------------------------------------
-# getOrCreateProcessedLabel / markMessageProcessed / markEmailsAsProcessed
+# IMAP helpers: findAllMailFolder / _parseGmailMessageId / findUidByMessageId /
+# markMessageProcessed / markEmailsAsProcessed
 # ---------------------------------------------------------------------------
 
-class _FakeLabelsResource:
-    """Minimal stand-in for service.users().labels() -- tracks create() calls."""
+class _FakeImapConnection:
+    """
+    Minimal stand-in for imaplib.IMAP4_SSL -- records every uid() command issued so a
+    test can assert on what was sent, and replays canned responses.
+    """
 
-    def __init__(self, existingLabels):
-        self._existingLabels = existingLabels
+    def __init__(self, searchUids=None, listResponse=None, storeStatus="OK"):
+        # uid("SEARCH", ...) results, as Gmail returns them: a single space-joined blob.
+        self._searchUids = searchUids if searchUids is not None else [b"11 12"]
+        self._listResponse = listResponse
+        self._storeStatus = storeStatus
+        self.uidCalls = []
         self.createCalls = []
+        self.closed = False
+        self.loggedOut = False
 
-    def list(self, userId):
-        return _FakeExecutable({"labels": self._existingLabels})
+    def uid(self, command, *args):
+        self.uidCalls.append((command, args))
+        if command == "SEARCH":
+            if not self._searchUids:
+                return "OK", [b""]
+            return "OK", self._searchUids
+        if command == "STORE":
+            return self._storeStatus, [b""]
+        return "OK", [b""]
 
-    def create(self, userId, body):
-        self.createCalls.append(body)
-        return _FakeExecutable({"id": "NEWLABEL123", "name": body["name"]})
+    def create(self, name):
+        self.createCalls.append(name)
+        return "OK", [b"created"]
 
+    def list(self):
+        if self._listResponse is None:
+            return "NO", []
+        return "OK", self._listResponse
 
-class _FakeMessagesResource:
-    """Minimal stand-in for service.users().messages() -- tracks modify() calls."""
+    def close(self):
+        self.closed = True
 
-    def __init__(self):
-        self.modifyCalls = []
-
-    def modify(self, userId, id, body):
-        self.modifyCalls.append({"id": id, "body": body})
-        return _FakeExecutable({})
-
-
-class _FakeExecutable:
-    """Mimics the googleapiclient pattern of chaining .execute() on every call."""
-
-    def __init__(self, result):
-        self._result = result
-
-    def execute(self):
-        return self._result
-
-
-class _FakeUsersResource:
-    def __init__(self, labelsResource, messagesResource):
-        self._labels = labelsResource
-        self._messages = messagesResource
-
-    def labels(self):
-        return self._labels
-
-    def messages(self):
-        return self._messages
+    def logout(self):
+        self.loggedOut = True
 
 
-class _FakeService:
-    def __init__(self, existingLabels=None):
-        self._labels = _FakeLabelsResource(existingLabels or [])
-        self._messages = _FakeMessagesResource()
+class TestFindAllMailFolder:
 
-    def users(self):
-        return _FakeUsersResource(self._labels, self._messages)
+    def test_allFlagPresent_returnsThatMailbox(self):
+        conn = _FakeImapConnection(listResponse=[
+            b'(\\HasNoChildren \\Inbox) "/" "INBOX"',
+            b'(\\HasNoChildren \\All) "/" "[Gmail]/All Mail"',
+        ])
+        assert findAllMailFolder(conn) == "[Gmail]/All Mail"
+
+    def test_localisedName_stillFoundByFlag(self):
+        # The display name is translated but the \All special-use flag is not -- this is
+        # the whole reason we match on the flag rather than the literal English name.
+        conn = _FakeImapConnection(listResponse=[
+            b'(\\HasNoChildren \\All) "/" "[Gmail]/Tous les messages"',
+        ])
+        assert findAllMailFolder(conn) == "[Gmail]/Tous les messages"
+
+    def test_noAllFlag_fallsBackToDefault(self):
+        conn = _FakeImapConnection(listResponse=[b'(\\HasNoChildren) "/" "INBOX"'])
+        assert findAllMailFolder(conn) == "[Gmail]/All Mail"
+
+    def test_listFails_fallsBackToDefault(self):
+        conn = _FakeImapConnection(listResponse=None)  # LIST returns NO
+        assert findAllMailFolder(conn) == "[Gmail]/All Mail"
 
 
-class TestGetOrCreateProcessedLabel:
+class TestParseGmailMessageId:
 
-    def test_labelAlreadyExists_returnsExistingId(self):
-        service = _FakeService(existingLabels=[{"id": "EXISTING1", "name": "tech-briefing/processed"}])
-        labelId = getOrCreateProcessedLabel(service)
-        assert labelId == "EXISTING1"
-        assert service._labels.createCalls == []  # never created -- already existed
+    def test_typicalFetchMetadata_returnsMsgId(self):
+        metadata = "12 (X-GM-MSGID 1794513002934 BODY[] {84321}"
+        assert _parseGmailMessageId(metadata) == "1794513002934"
 
-    def test_labelMissing_createsAndReturnsNewId(self):
-        service = _FakeService(existingLabels=[{"id": "OTHER", "name": "some-other-label"}])
-        labelId = getOrCreateProcessedLabel(service)
-        assert labelId == "NEWLABEL123"
-        assert len(service._labels.createCalls) == 1
-        assert service._labels.createCalls[0]["name"] == "tech-briefing/processed"
+    def test_stopsBeforeTrailingByteCount(self):
+        # The {84321} byte count later in the line must not be appended to the msgid.
+        metadata = "7 (X-GM-MSGID 42 BODY[] {999}"
+        assert _parseGmailMessageId(metadata) == "42"
+
+    def test_markerAbsent_returnsNone(self):
+        assert _parseGmailMessageId("12 (BODY[] {84321}") is None
+
+    def test_emptyMetadata_returnsNone(self):
+        assert _parseGmailMessageId("") is None
+
+
+class TestFindUidByMessageId:
+
+    def test_messageFound_returnsFirstUid(self):
+        conn = _FakeImapConnection(searchUids=[b"57"])
+        assert findUidByMessageId(conn, "1794513002934") == "57"
+        command, args = conn.uidCalls[0]
+        assert command == "SEARCH"
+        assert args == ("X-GM-MSGID", "1794513002934")
+
+    def test_noMatch_returnsNone(self):
+        conn = _FakeImapConnection(searchUids=[])
+        assert findUidByMessageId(conn, "1794513002934") is None
+
+    def test_emptyMessageId_raisesValueError(self):
+        with pytest.raises(ValueError):
+            findUidByMessageId(_FakeImapConnection(), "")
 
 
 class TestMarkMessageProcessed:
 
-    def test_validArgs_callsModifyWithLabelId(self):
-        service = _FakeService()
-        markMessageProcessed(service, "MSG123", "LABEL456")
-        assert len(service._messages.modifyCalls) == 1
-        call = service._messages.modifyCalls[0]
-        assert call["id"] == "MSG123"
-        assert call["body"]["addLabelIds"] == ["LABEL456"]
+    def test_validArgs_storesGmailLabel(self):
+        conn = _FakeImapConnection()
+        markMessageProcessed(conn, "57")
+        command, args = conn.uidCalls[0]
+        assert command == "STORE"
+        assert args[0] == "57"
+        assert args[1] == "+X-GM-LABELS"
+        assert "tech-briefing/processed" in args[2]
 
-    def test_emptyMessageId_raisesValueError(self):
+    def test_emptyUid_raisesValueError(self):
         with pytest.raises(ValueError):
-            markMessageProcessed(_FakeService(), "", "LABEL456")
+            markMessageProcessed(_FakeImapConnection(), "")
 
-    def test_emptyLabelId_raisesValueError(self):
-        with pytest.raises(ValueError):
-            markMessageProcessed(_FakeService(), "MSG123", "")
+    def test_storeRejected_raisesImapError(self):
+        conn = _FakeImapConnection(storeStatus="NO")
+        with pytest.raises(imaplib.IMAP4.error):
+            markMessageProcessed(conn, "57")
 
 
 class TestMarkEmailsAsProcessed:
@@ -162,66 +200,139 @@ class TestMarkEmailsAsProcessed:
     def test_validEmails_labelsEachOne(self, monkeypatch):
         import src.gmail_client as gmail_client_module
 
-        service = _FakeService(existingLabels=[{"id": "L1", "name": "tech-briefing/processed"}])
-        monkeypatch.setattr(gmail_client_module, "buildGmailService", lambda: service)
+        conn = _FakeImapConnection(searchUids=[b"57"])
+        monkeypatch.setattr(gmail_client_module, "buildImapConnection", lambda: conn)
 
-        emails = [{"id": "MSG1"}, {"id": "MSG2"}]
-        markEmailsAsProcessed(emails)
+        markEmailsAsProcessed([{"id": "MSG1"}, {"id": "MSG2"}])
 
-        assert len(service._messages.modifyCalls) == 2
-        labeledIds = {call["id"] for call in service._messages.modifyCalls}
-        assert labeledIds == {"MSG1", "MSG2"}
+        stores = [c for c in conn.uidCalls if c[0] == "STORE"]
+        assert len(stores) == 2
+        assert conn.createCalls == ['"tech-briefing/processed"']
+
+    def test_unresolvableMessage_isSkippedNotFatal(self, monkeypatch):
+        import src.gmail_client as gmail_client_module
+
+        # SEARCH finds nothing, so no UID -- the run must continue rather than blow up,
+        # since a failure here only means the email gets re-summarized next time.
+        conn = _FakeImapConnection(searchUids=[])
+        monkeypatch.setattr(gmail_client_module, "buildImapConnection", lambda: conn)
+
+        markEmailsAsProcessed([{"id": "MSG1"}])
+
+        assert [c for c in conn.uidCalls if c[0] == "STORE"] == []
+
+    def test_connectionIsClosedAfterwards(self, monkeypatch):
+        import src.gmail_client as gmail_client_module
+
+        conn = _FakeImapConnection(searchUids=[b"57"])
+        monkeypatch.setattr(gmail_client_module, "buildImapConnection", lambda: conn)
+
+        markEmailsAsProcessed([{"id": "MSG1"}])
+
+        assert conn.closed and conn.loggedOut
+
+
+# ---------------------------------------------------------------------------
+# decodeMimeHeader
+# ---------------------------------------------------------------------------
+
+class TestDecodeMimeHeader:
+
+    def test_encodedWord_isDecoded(self):
+        # RFC 2047 base64-encoded "Hello world"
+        assert decodeMimeHeader("=?UTF-8?B?SGVsbG8gd29ybGQ=?=") == "Hello world"
+
+    def test_plainAscii_passesThrough(self):
+        assert decodeMimeHeader("Weekly Digest") == "Weekly Digest"
+
+    def test_none_returnsEmptyString(self):
+        assert decodeMimeHeader(None) == ""
+
+    def test_emptyString_returnsEmptyString(self):
+        assert decodeMimeHeader("") == ""
 
 
 # ---------------------------------------------------------------------------
 # extractPlainText
 # ---------------------------------------------------------------------------
 
-PLAIN_TEXT_PAYLOAD = {
-    "mimeType": "text/plain",
-    "body": {
-        # base64url of "Hello, newsletter!"
-        "data": "SGVsbG8sIG5ld3NsZXR0ZXIh"
-    }
-}
+def _message(raw):
+    """Parses a raw RFC822 string into the email.message.Message extractPlainText takes."""
+    return email.message_from_string(raw)
 
-MULTIPART_PAYLOAD = {
-    "mimeType": "multipart/alternative",
-    "parts": [
-        {
-            "mimeType": "text/plain",
-            "body": {"data": "SGVsbG8sIG5ld3NsZXR0ZXIh"}  # "Hello, newsletter!"
-        },
-        {
-            "mimeType": "text/html",
-            "body": {"data": "PGI+SGVsbG88L2I+"}  # "<b>Hello</b>"
-        }
-    ]
-}
+
+SINGLE_PART_MESSAGE = _message(
+    "Subject: Test\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "\r\n"
+    "Hello, newsletter!"
+)
+
+MULTIPART_MESSAGE = _message(
+    "Subject: Test\r\n"
+    'Content-Type: multipart/alternative; boundary="BOUND"\r\n'
+    "\r\n"
+    "--BOUND\r\n"
+    "Content-Type: text/html; charset=utf-8\r\n"
+    "\r\n"
+    "<b>Hello</b>\r\n"
+    "--BOUND\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "\r\n"
+    "Hello, newsletter!\r\n"
+    "--BOUND--\r\n"
+)
+
+NESTED_MULTIPART_MESSAGE = _message(
+    "Subject: Test\r\n"
+    'Content-Type: multipart/mixed; boundary="OUTER"\r\n'
+    "\r\n"
+    "--OUTER\r\n"
+    'Content-Type: multipart/alternative; boundary="INNER"\r\n'
+    "\r\n"
+    "--INNER\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    "\r\n"
+    "Nested body text.\r\n"
+    "--INNER--\r\n"
+    "--OUTER--\r\n"
+)
+
+ATTACHMENT_ONLY_MESSAGE = _message(
+    "Subject: Test\r\n"
+    'Content-Type: multipart/mixed; boundary="BOUND"\r\n'
+    "\r\n"
+    "--BOUND\r\n"
+    "Content-Type: text/plain; charset=utf-8\r\n"
+    'Content-Disposition: attachment; filename="notes.txt"\r\n'
+    "\r\n"
+    "Attached, not the body.\r\n"
+    "--BOUND--\r\n"
+)
+
 
 class TestExtractPlainText:
 
     def test_singlePartPlainText_returnsDecodedText(self):
-        result = extractPlainText(PLAIN_TEXT_PAYLOAD)
-        assert result == "Hello, newsletter!"
+        assert extractPlainText(SINGLE_PART_MESSAGE).strip() == "Hello, newsletter!"
 
-    def test_multipartAlternative_returnsPlainTextPart(self):
-        result = extractPlainText(MULTIPART_PAYLOAD)
-        assert result == "Hello, newsletter!"
+    def test_multipartAlternative_prefersPlainOverHtml(self):
+        assert extractPlainText(MULTIPART_MESSAGE).strip() == "Hello, newsletter!"
 
-    def test_emptyPayload_returnsEmptyString(self):
-        result = extractPlainText({})
-        assert result == ""
+    def test_nestedMultipart_isWalkedNotJustTopLevel(self):
+        assert extractPlainText(NESTED_MULTIPART_MESSAGE).strip() == "Nested body text."
 
-    def test_noBodyData_returnsEmptyString(self):
-        payload = {"mimeType": "text/plain", "body": {}}
-        result = extractPlainText(payload)
-        assert result == ""
+    def test_plainTextAttachment_isNotTreatedAsBody(self):
+        assert extractPlainText(ATTACHMENT_ONLY_MESSAGE) == ""
 
-    def test_unknownMimeType_returnsEmptyString(self):
-        payload = {"mimeType": "application/pdf", "body": {"data": "abc"}}
-        result = extractPlainText(payload)
-        assert result == ""
+    def test_none_returnsEmptyString(self):
+        assert extractPlainText(None) == ""
+
+    def test_htmlOnly_returnsEmptyString(self):
+        htmlOnly = _message(
+            "Subject: Test\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<b>Hi</b>"
+        )
+        assert extractPlainText(htmlOnly) == ""
 
 
 # ---------------------------------------------------------------------------
@@ -367,55 +478,3 @@ class TestBuildMessage:
             assert "audio/mpeg" in contentTypes
         finally:
             mailer_module.RECIPIENT_EMAILS = original
-
-
-# ---------------------------------------------------------------------------
-# persistGmailToken -- local-write path always; SSM write-back only when IS_LAMBDA
-# ---------------------------------------------------------------------------
-
-class TestPersistGmailToken:
-
-    def test_emptyString_raisesValueError(self):
-        with pytest.raises(ValueError):
-            persistGmailToken("")
-
-    def test_whitespaceOnly_raisesValueError(self):
-        with pytest.raises(ValueError):
-            persistGmailToken("   \n  ")
-
-    def test_notLambda_writesLocalFileOnly(self, tmp_path, monkeypatch):
-        import src.config as config_module
-
-        fakeTokenPath = tmp_path / "token.json"
-        monkeypatch.setattr(config_module, "TOKEN_PATH", str(fakeTokenPath))
-        monkeypatch.setattr(config_module, "IS_LAMBDA", False)
-
-        # boto3.client should never be constructed on the local-only path -- if it
-        # were, this raises instead of silently succeeding against real AWS.
-        def _shouldNotBeCalled(*args, **kwargs):
-            raise AssertionError("boto3.client() should not be called when IS_LAMBDA is False")
-        monkeypatch.setattr(config_module.boto3, "client", _shouldNotBeCalled)
-
-        persistGmailToken('{"refresh_token": "abc"}')
-        assert fakeTokenPath.read_text() == '{"refresh_token": "abc"}'
-
-    def test_isLambda_alsoWritesBackToSsm(self, tmp_path, monkeypatch):
-        import src.config as config_module
-
-        fakeTokenPath = tmp_path / "token.json"
-        monkeypatch.setattr(config_module, "TOKEN_PATH", str(fakeTokenPath))
-        monkeypatch.setattr(config_module, "IS_LAMBDA", True)
-        monkeypatch.setattr(config_module, "SSM_PARAMETER_PREFIX", "/daily-tech-brief")
-
-        putCalls = []
-        class _FakeSsmClient:
-            def put_parameter(self, **kwargs):
-                putCalls.append(kwargs)
-        monkeypatch.setattr(config_module.boto3, "client", lambda service: _FakeSsmClient())
-
-        persistGmailToken('{"refresh_token": "xyz"}')
-
-        assert fakeTokenPath.read_text() == '{"refresh_token": "xyz"}'
-        assert len(putCalls) == 1
-        assert putCalls[0]["Name"] == "/daily-tech-brief/GMAIL_TOKEN_JSON"
-        assert putCalls[0]["Value"] == '{"refresh_token": "xyz"}'

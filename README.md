@@ -6,14 +6,19 @@ on a Mon–Fri schedule.
 
 ## Setup
 
-1. Follow [docs/GMAIL_SETUP.md](docs/GMAIL_SETUP.md) to create Google Cloud credentials and
-   download `data/credentials.json`.
-2. Copy `.env.example` to `.env` and fill in your values.
-3. Run the one-time OAuth flow: `docker compose run --rm --service-ports auth`
-   (`--service-ports` is required — plain `docker compose run` does not publish the `ports:`
-   from docker-compose.yml, so the OAuth redirect to `localhost:8080` would otherwise have
-   nothing listening on the host to catch it)
-4. Run the pipeline: `./run` (or `./run -b` to rebuild the image first)
+1. Follow [docs/GMAIL_SETUP.md](docs/GMAIL_SETUP.md) to create a Gmail **App Password**
+   (2 minutes, no Google Cloud project needed).
+2. Copy `.env.example` to `.env` and fill in your values — the App Password goes in
+   `SMTP_PASSWORD` and covers both reading (IMAP) and sending (SMTP).
+3. Run the pipeline: `./run` (or `./run -b` to rebuild the image first)
+
+There is no one-time auth step. The Gmail API's OAuth2 flow — `credentials.json`,
+`token.json`, and a `docker compose run auth` consent redirect — was removed on 2026-09-15
+after its refresh token silently expired every 7 days; see [docs/DECISIONS.md](docs/DECISIONS.md).
+
+> **Note:** reading Gmail needs outbound port 993 (IMAPS). The Cobaltix office network blocks
+> it, so `./run` cannot reach Gmail from the office even though sending on 587 works. Use a
+> different network to run locally.
 
 ## Testing
 
@@ -36,4 +41,4 @@ Gmail/Claude credentials and stays out of this — run it manually if needed.
 - [docs/ISSUES-ENCOUNTERED.md](docs/ISSUES-ENCOUNTERED.md) — running problems/resolutions log
 - [infra/](infra/) — Terraform IaC for the AWS Lambda deployment (applied to AWS 2026-08-25;
   CI/CD deploy pipeline working since 2026-08-26; full end-to-end delivery from the deployed
-  Lambda not yet confirmed, see `docs/TODO.md`)
+  Lambda confirmed via a real EventBridge-triggered run 2026-08-31)

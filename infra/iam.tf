@@ -42,22 +42,18 @@ data "aws_iam_policy_document" "lambda_execution" {
   }
 
   statement {
-    sid       = "ReadSecrets"
-    actions   = ["ssm:GetParameter"]
+    sid     = "ReadSecrets"
+    actions = ["ssm:GetParameter"]
     resources = [
       aws_ssm_parameter.anthropic_api_key.arn,
       aws_ssm_parameter.smtp_password.arn,
-      aws_ssm_parameter.gmail_token.arn,
     ]
   }
 
-  # Narrower than the read scope above on purpose — this is the only parameter the
-  # running pipeline ever rewrites (after a Gmail token refresh).
-  statement {
-    sid       = "WriteRefreshedToken"
-    actions   = ["ssm:PutParameter"]
-    resources = [aws_ssm_parameter.gmail_token.arn]
-  }
+  # No ssm:PutParameter anywhere in this policy on purpose. The pipeline used to rewrite
+  # the Gmail OAuth token parameter after each refresh; since the move to IMAP + App
+  # Password (2026-09-15) it holds no credential that changes at runtime, so its
+  # execution role is now strictly read-only against Parameter Store.
 
   statement {
     sid       = "DecryptSecrets"

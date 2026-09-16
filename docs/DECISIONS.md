@@ -116,3 +116,61 @@ says so and points back at the one it supersedes; don't rewrite history.
   a crash before that point is reached (import-time errors, container-init failures) — exactly
   the failure mode that silently ate two days of runs in the 2026-08-26 incident (see
   ISSUES-ENCOUNTERED.md). This alarm doesn't depend on the pipeline's own code running at all.
+
+- **(2026-08-31) `lambda_timeout_seconds` raised from `300` to `600`** — a normal run's real
+  wall-clock time (Gmail fetch → Claude summarization → piper/ffmpeg TTS → SMTP) was landing at
+  ~300–311 seconds, right at the old 300s Lambda timeout, so a run could complete and deliver the
+  email but still get marked `Status: timeout` by Lambda itself, triggering an EventBridge
+  Scheduler retry and a duplicate email — see ISSUES-ENCOUNTERED.md's 2026-08-31 entry. 600s
+  gives roughly 2x headroom over observed real duration while staying well inside Lambda's
+  15-minute (900s) hard cap.
+
+- **(date uncertain — decision predates this log entry; recorded here 2026-08-31 while syncing
+  docs) Schedule: `America/Los_Angeles` IANA timezone, not UTC.** `infra/variables.tf`'s
+  `schedule_timezone` variable and the comment above it in `infra/eventbridge.tf` explain the
+  reasoning already implemented in code: EventBridge Scheduler (the newer dedicated scheduling
+  service used here, not classic EventBridge Rules) accepts an explicit
+  `schedule_expression_timezone`, so `America/Los_Angeles` is set directly rather than
+  hand-converting the Mon–Fri 07:00 cron to UTC. This was never written down as a decision when
+  it was made — `docs/ARCHITECTURE.md` still listed the timezone as an open item until this sync.
+
+- **(2026-09-15) Gmail reading moved from the Gmail API (OAuth2) to IMAP + a Gmail App
+  Password.** Supersedes the implicit "use the Gmail API" choice baked in since the project
+  started, and the 2026-08-28 decision to upgrade the scope to `gmail.modify`. Reason: the OAuth
+  approach had no sustainable configuration for an unattended personal pipeline. `gmail.modify`
+  is one of Google's **restricted** scopes, which forces a choice between two bad options — leave
+  the External consent screen in "Testing" publishing status, where Google expires the refresh
+  token after exactly 7 days, or publish to production, which for a restricted scope requires
+  full verification: a domain you own and have verified in Search Console, a live homepage and
+  privacy policy, and a third-party CASA security assessment billed annually. The first option is
+  what was actually running, and it silently killed seven consecutive days of briefings (see
+  ISSUES-ENCOUNTERED.md). The second is grossly disproportionate for a cron job reading its
+  owner's own inbox. Two escape hatches were checked and ruled out: narrowing the scope doesn't
+  help (`gmail.readonly` is also restricted, and the only non-restricted Gmail scopes —
+  `gmail.metadata`, `gmail.labels` — can't read message bodies, which is the entire job), and
+  `User type: Internal` isn't available because the mailbox is a consumer `@gmail.com` account,
+  not a Workspace one. IMAP with an App Password has no consent screen, no publishing status, no
+  verification, and no expiry; it's also the *same credential* `src/mailer.py` already used for
+  SMTP delivery on this same account, which is why sending never broke while reading did.
+  Trade-offs accepted: App Passwords require 2-Step Verification on the account, and Google could
+  in principle deprecate them (no announced end date, and they remain the supported path for
+  IMAP/SMTP on consumer accounts). Gmail's IMAP extensions preserved the existing behaviour
+  almost exactly — `X-GM-RAW` keeps `buildSearchQuery()`'s Gmail search syntax unchanged,
+  `X-GM-LABELS` applies the same `tech-briefing/processed` label, and `X-GM-MSGID` replaces the
+  API's message id as a stable key. Net deletion: `src/auth.py`, the `auth` Compose service, the
+  `GMAIL_TOKEN_JSON` SSM parameter, the execution role's `ssm:PutParameter` permission, and four
+  `google-auth`/`google-api-python-client` dependencies (`imaplib` and `email` are stdlib).
+
+- **(2026-09-15) EventBridge Scheduler retries pinned to zero.** The Lambda target in
+  `infra/eventbridge.tf` had no `retry_policy` block, so it inherited EventBridge Scheduler's
+  default of **185 retry attempts** over 24 hours. That default is actively harmful here: the
+  pipeline is not idempotent past the point where `sendBriefing()` succeeds, and `main.py` emails
+  a failure alert on every failed run — so a retried run means either a duplicate briefing or a
+  burst of alert emails. This is the true root cause of the 2026-08-31 duplicate-briefing bug,
+  which was diagnosed correctly (a run hit the 300s timeout after delivering) but fixed only at
+  the symptom (raising `lambda_timeout_seconds` to 600), leaving the retry behaviour in place to
+  fire again on any other failure. Set `maximum_retry_attempts = 0`. Failures are still surfaced,
+  just not by retrying: `src/lambda_handler.py` now raises, which increments the Lambda `Errors`
+  metric and trips the CloudWatch alarm. A single missed briefing is cheap to absorb —
+  `markEmailsAsProcessed()` only labels after a successful delivery, so the next run picks the
+  same emails up.

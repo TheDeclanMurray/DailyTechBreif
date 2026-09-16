@@ -25,11 +25,19 @@ def handler(event, context):
         context (LambdaContext): Lambda runtime context object. Unused.
 
     Returns:
-        dict: {"statusCode": int, "body": str} -- 200 on success, 500 on failure.
-            The return value isn't consumed by EventBridge (this is an async
-            invocation), but a non-2xx statusCode is what makes a failed run show up
-            as an "Errors" metric in CloudWatch, which the alarm in
-            docs/TODO.md's backstop-alert item will watch.
+        dict: {"statusCode": 200, "body": str} on success. The return value isn't
+            consumed by EventBridge (this is an async invocation).
+
+    Raises:
+        RuntimeError: If the pipeline exits non-zero. Raising is load-bearing, not
+            stylistic -- Lambda counts an invocation as an error ONLY when the handler
+            raises. This previously returned {"statusCode": 500} instead, on the
+            mistaken assumption that a non-2xx body registered as a failure; it does
+            not. Every failed run was recorded as a success, so the Errors metric sat
+            at 0 and the CloudWatch alarm in infra/alarms.tf never fired through seven
+            consecutive days of dead briefings (2026-09-07 to 2026-09-15). The alarm is
+            the backstop for failures that crash before main.py's own alerting can run,
+            so it has to be driven by something the handler can't silently swallow.
     """
     exitCode = runPipeline()
 
@@ -37,4 +45,4 @@ def handler(event, context):
         return {"statusCode": 200, "body": "Pipeline completed successfully."}
 
     log.error("Lambda invocation failed with pipeline exit code %s.", exitCode)
-    return {"statusCode": 500, "body": f"Pipeline failed with exit code {exitCode}."}
+    raise RuntimeError(f"Pipeline failed with exit code {exitCode}.")

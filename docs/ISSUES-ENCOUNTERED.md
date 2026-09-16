@@ -175,3 +175,83 @@ made), with the date. Append-only — entries are never edited or removed once a
   that exercises only the Gmail API calls, avoiding a second real send. Confirms a Compose service
   finishing successfully is not proof its image contains current code -- `docker compose build`
   must be run per-service explicitly after a source change, `run` alone never triggers a rebuild.
+
+- **(2026-08-31) Two briefing emails sent for one scheduled run, ~5 minutes apart (7:05 and
+  7:10 local).** CloudWatch logs (`/aws/lambda/daily-tech-brief`) showed one EventBridge-triggered
+  invocation whose pipeline actually completed and delivered the briefing
+  (`Briefing delivered to: ...` at 14:05:44 UTC), but Lambda's own `REPORT` line for that same
+  invocation showed `Status: timeout` at `Duration: 300000.00 ms` — the run finished sending the
+  email right at the wire, but overall wall-clock time (Gmail fetch → Claude → piper/ffmpeg TTS →
+  SMTP) grazed the Lambda's configured 300s timeout, so AWS recorded the whole invocation as
+  failed. EventBridge Scheduler's default retry policy then retried the same invocation ~67
+  seconds later; that retry ran the full pipeline again independently (re-fetched Gmail, since the
+  first run's `markEmailsAsProcessed()` never got called on a timeout) and delivered a second
+  email at 14:10:58 UTC. Both invocations logged under the same Lambda `RequestId`
+  (`ea6a9588-...`), which is expected for a scheduler-driven retry. **Resolved same day**: bumped
+  `lambda_timeout_seconds` in `infra/variables.tf` from `300` to `600` and applied — see
+  [DECISIONS.md](DECISIONS.md) for the reasoning. No data was lost or duplicated in Gmail (the
+  first, timed-out run's emails were never labeled processed, so the second run's own
+  `markEmailsAsProcessed()` call is the only one that fired), the only user-visible symptom was
+  the duplicate email.
+
+- **(2026-09-15) Seven consecutive days of briefings died silently on an expired Gmail OAuth
+  refresh token, and every layer built to catch that failed to report it.** The user reported
+  simply that "the briefs are not working" for about a week. Diagnosis from AWS, in order:
+
+  1. **The Lambda looked perfectly healthy.** `State: Active`, `LastUpdateStatus: Successful`,
+     unchanged since 2026-08-31. EventBridge fired on schedule every weekday — `Invocations`
+     showed exactly 1.0 per weekday with no gaps.
+  2. **The `Errors` metric was 0.0 on every single one of those days**, which is what made this
+     confusing before reading logs: the runs were being recorded as *successes*.
+  3. **CloudWatch logs showed the truth.** Every run since 2026-09-07 died ~1.8 seconds in, at
+     the very first pipeline step:
+     `Token refresh failed: ('invalid_grant: Token has been expired or revoked.')`.
+  4. **Root cause: the OAuth consent screen was in "Testing" publishing status**, where Google
+     expires refresh tokens after exactly 7 days. The dates confirm it to the day — the token was
+     re-authed 2026-08-28 (the `gmail.modify` scope upgrade), the `GMAIL_TOKEN_JSON` SSM
+     parameter was last successfully rewritten 2026-09-04 07:00 by that morning's run, and the
+     next weekday run (2026-09-07) failed and every one after it. Last good briefing: Fri
+     2026-09-04. `docs/GMAIL_SETUP.md` had actively recommended this setting ("Keeping it in
+     'Testing' mode is fine and avoids Google's verification process") — fine for a one-off
+     script, a guaranteed 7-day time bomb for a scheduled pipeline.
+
+  **Why nothing shouted about it.** Two independent alerting paths both failed:
+
+  - `src/lambda_handler.py` returned `{"statusCode": 500}` on failure, with a docstring asserting
+    that "a non-2xx statusCode is what makes a failed run show up as an Errors metric in
+    CloudWatch". That is simply not how Lambda works — an invocation counts as an error only when
+    the handler *raises*. A handler that returns has succeeded, whatever is in the payload. So
+    the `Errors` metric stayed at 0, and the CloudWatch alarm added on 2026-08-28 specifically as
+    a backstop for this class of silent failure never came close to firing. Fixed by raising
+    `RuntimeError` instead of returning.
+  - `main.py`'s own `sendFailureAlert()` *did* work correctly and emailed
+    `dmurray.cobaltix@gmail.com` every single failing day. Those alerts were never noticed —
+    worth checking spam/filter rules on that address, since this path is the primary alerting
+    mechanism and it was doing its job.
+
+  **Fix:** rather than re-authing (which would have bought exactly 7 more days), Gmail reading
+  moved off OAuth entirely to IMAP + an App Password. See DECISIONS.md for the full reasoning and
+  the options ruled out.
+
+- **(2026-09-15) EventBridge Scheduler's default 185 retries found while fixing the above.**
+  Making `lambda_handler.py` raise (necessary to drive the `Errors` metric) would have been
+  dangerous on its own: `infra/eventbridge.tf`'s target had no `retry_policy`, so it was
+  inheriting the AWS default of **185 attempts over 24 hours**. A raising handler plus that
+  default means a single failure re-runs the whole pipeline up to 185 times and sends 185 failure
+  alert emails. This is also, retroactively, the real mechanism behind the 2026-08-31
+  duplicate-briefing bug — that was fixed by raising the Lambda timeout, which made the specific
+  trigger unlikely but left the retry behaviour untouched. Pinned `maximum_retry_attempts = 0`.
+
+- **(2026-09-15) The new IMAP client could not be verified locally: the office network blocks
+  IMAPS.** After rewriting `src/gmail_client.py`, a read-only verification script against the
+  real mailbox failed at the TLS handshake: `SSL: UNEXPECTED_EOF_WHILE_READING` from inside the
+  container, `ConnectionResetError [WinError 10054]` from the Windows host directly. TCP connect
+  to `imap.gmail.com:993` succeeds, then the handshake is reset — the signature of a firewall
+  terminating mail protocols rather than anything wrong with Gmail or the credential. Confirmed
+  the same reset on `smtp.gmail.com:465`, while `587` (SMTP submission, what `mailer.py` uses)
+  stays open — a common corporate policy of permitting submission while blocking IMAP/SMTPS, and
+  the reason sending has always worked locally while reading now cannot be tested here. Not a
+  problem for production: the Lambda has `VpcConfig: null`, so it uses unrestricted AWS-managed
+  egress with no security group in the path. Consequence for process: this change could not be
+  validated locally the way the 2026-08-25 end-to-end run validated the OAuth version — it has to
+  be proven by a manual `aws lambda invoke` after deploy, or tested from a non-office network.

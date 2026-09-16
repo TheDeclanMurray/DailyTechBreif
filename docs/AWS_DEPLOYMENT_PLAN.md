@@ -17,7 +17,7 @@ This supersedes the "Deployment target" line and the Phase 3 cron item in [CLAUD
 
 ## 2. Current state (recap)
 
-*Updated 2026-08-27 — see [ARCHITECTURE.md](ARCHITECTURE.md#migration-status) for the canonical
+*Updated 2026-08-31 — see [ARCHITECTURE.md](ARCHITECTURE.md#migration-status) for the canonical
 status; this section just keeps the plan's own recap from going stale.*
 
 - Pipeline logic itself is fully implemented and confirmed working locally end-to-end (2026-08-25
@@ -31,14 +31,13 @@ status; this section just keeps the plan's own recap from going stale.*
   `REPLACE_ME` placeholders had gone un-noticed until then — see ISSUES-ENCOUNTERED.md) and
   `src/config.py` reads them when `IS_LAMBDA`.
 - Local dev still triggered manually via the `run` script → `docker compose run --rm tech-briefing`.
-- Git repo: 9 commits, working tree clean, everything (including `infra/`'s real content and
+- Git repo: 12 commits, working tree clean, everything (including `infra/`'s real content and
   `.github/workflows/deploy.yml`) committed and pushed.
-- `infra/` (§6/§7 below) is applied to real AWS — Lambda, ECR, IAM, SSM, EventBridge Scheduler
-  all live — and the `deploy` CI/CD job has succeeded end to end at least once. What's still
-  unconfirmed: whether a real invocation of the deployed Lambda completes the *entire* pipeline
-  (Gmail → Claude → TTS → SMTP with a delivered email) — the furthest a real invoke has gotten so
-  far is TTS output, one step before SMTP — and whether an actual EventBridge-triggered run
-  behaves the same as a manual `aws lambda invoke`. See [TODO.md](TODO.md).
+- `infra/` (§6/§7 below) is applied to real AWS — Lambda, ECR, IAM, SSM, EventBridge Scheduler,
+  the CloudWatch alarm backstop — all live, and the `deploy` CI/CD job has succeeded end to end
+  multiple times. **All 5 migration phases are now done (2026-08-31)**: a real
+  EventBridge-triggered scheduled run completed the entire pipeline (Gmail → Claude → TTS → SMTP
+  with a delivered email) — see §7 and `CLAUDE.md`'s Progress section for that date.
 
 ## 3. Target architecture
 
@@ -126,10 +125,10 @@ No changes needed to `summarizer.py`, `tts.py`'s core logic, or `mailer.py` — 
   - [x] OIDC trust relationship + deploy role written in Terraform (`infra/iam.tf`, applied 2026-08-25; `sub` condition corrected 2026-08-26 to match GitHub's real token — see DECISIONS.md)
   - [x] `.github/workflows/deploy.yml` written (§8) and pushed to GitHub (2026-08-26)
   - [x] Store the deploy role ARN, AWS region, ECR repo, and Lambda function name as GitHub repo **variables** (all four ended up needing to move from secrets to variables 2026-08-26 — see ISSUES-ENCOUNTERED.md); `deploy` job has succeeded end to end at least once
-- [ ] **Phase 5 — Cutover**
-  - [ ] Confirm a real `aws lambda invoke` completes the entire pipeline (Gmail → Claude → TTS → SMTP, actual email delivered) — not yet reached; furthest so far is TTS output, see `docs/TODO.md`
-  - [ ] Confirm an actual EventBridge-triggered run behaves the same as a manual invoke
-  - [ ] Update `CLAUDE.md` Progress/Known Issues sections to match once both are confirmed
+- [x] **Phase 5 — Cutover**
+  - [x] Confirm a real `aws lambda invoke` completes the entire pipeline (Gmail → Claude → TTS → SMTP, actual email delivered) — confirmed via a real EventBridge-triggered run (see next item) 2026-08-31
+  - [x] Confirm an actual EventBridge-triggered run behaves the same as a manual invoke — the scheduled Mon–Fri 07:00 run fired for real 2026-08-31 and completed the whole pipeline; see `CLAUDE.md`'s Progress section for that date (a duplicate-email bug was also found and fixed the same day — Lambda timeout was too tight, see DECISIONS.md/ISSUES-ENCOUNTERED.md)
+  - [x] Update `CLAUDE.md` Progress/Known Issues sections to match once both are confirmed — done 2026-08-31
 
 ## 8. CI/CD pipeline (GitHub Actions)
 
@@ -195,10 +194,12 @@ Few-minute invocation on a weekday schedule: Lambda compute + ECR storage + SSM 
 
 ## 10. Open questions / risks
 
-- **Timeout/memory sizing**: still unmeasured — no real invoke has completed the full pipeline yet
-  (furthest so far is TTS output), so there's no representative CloudWatch duration/memory-used
-  data to tune from. `infra/variables.tf` currently defaults to 1536MB as a starting point, not a
-  measured value — tracked in `docs/TODO.md`. Lambda hard cap is 15 min regardless.
+- **Timeout/memory sizing**: timeout is resolved — a real full run measured at ~300–311s wall
+  clock, right at the old 300s timeout, which caused a duplicate-email bug (see
+  ISSUES-ENCOUNTERED.md's 2026-08-31 entry); raised to 600s for headroom (see DECISIONS.md).
+  Memory is still unmeasured against a representative real run — `infra/variables.tf` defaults to
+  1536MB as a starting point, not a measured value — tracked in `docs/TODO.md`. Lambda hard cap is
+  15 min regardless.
 - ~~**`ffmpeg` on Amazon Linux 2023**: needs a static-binary approach, not `apt-get`.~~ Resolved:
   static binary baked into the Dockerfile. The source needed to change twice —
   johnvansickle.com first (2026-08-26), then BtbN/FFmpeg-Builds after johnvansickle started

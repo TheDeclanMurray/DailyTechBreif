@@ -46,5 +46,23 @@ resource "aws_scheduler_schedule" "weekly_briefing" {
   target {
     arn      = aws_lambda_function.this.arn
     role_arn = aws_iam_role.scheduler_invoke.arn
+
+    # Explicitly no retries. EventBridge Scheduler's default is 185 attempts, which is
+    # actively harmful for this workload: the pipeline is not idempotent past the point
+    # where sendBriefing() succeeds, and main.py emails a failure alert on every failed
+    # run. A retried run therefore means either a duplicate briefing or a burst of alert
+    # emails. This is the real root cause of the 2026-08-31 duplicate-briefing bug --
+    # a run hit the 300s timeout after delivering, and the default retry policy ran the
+    # whole pipeline again. Raising lambda_timeout_seconds to 600 made that specific
+    # trigger unlikely but left the retry behaviour in place; this removes it.
+    #
+    # Failures are still surfaced, just not by retrying: src/lambda_handler.py raises on
+    # a non-zero exit, which increments the Lambda Errors metric and trips the
+    # CloudWatch alarm in alarms.tf. One missed briefing is recoverable -- the next run
+    # picks the emails up again, since markEmailsAsProcessed() only labels after a
+    # successful delivery.
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
   }
 }
