@@ -114,10 +114,12 @@ def findAllMailFolder(conn):
 def buildSearchQuery(senderEmail):
     """
     Constructs a Gmail search query for a specific sender within LOOKBACK_DAYS.
-    Excludes messages already tagged with PROCESSED_LABEL_NAME, so a message summarized
-    on a previous run doesn't get re-fetched and re-summarized on the next one.
-    Passed to IMAP via X-GM-RAW, so this stays Gmail's own search syntax, unchanged from
-    the Gmail API implementation.
+    Passed to IMAP via X-GM-RAW so this stays Gmail's own search syntax.
+    The processed-label exclusion is NOT included here -- PROCESSED_LABEL_NAME contains
+    a "/" which requires inner double quotes inside the X-GM-RAW quoted string, and
+    Gmail's IMAP parser rejects the resulting nested quotes with BAD Could not parse
+    command. Already-processed messages are filtered out during the fetch step instead,
+    via X-GM-LABELS (see _isAlreadyProcessed).
     @param senderEmail (str) - sender address to filter on
     @returns (str) Gmail query string
     @throws ValueError if senderEmail is not a valid address
@@ -127,8 +129,7 @@ def buildSearchQuery(senderEmail):
 
     cutoffDate = datetime.date.today() - datetime.timedelta(days=LOOKBACK_DAYS)
     dateStr = cutoffDate.strftime("%Y/%m/%d")
-    # Gmail's search syntax quotes a label name containing a "/" and negates it with "-".
-    return f"from:{senderEmail} after:{dateStr} -label:\"{PROCESSED_LABEL_NAME}\""
+    return f"from:{senderEmail} after:{dateStr}"
 
 
 def ensureProcessedLabel(conn):
@@ -270,7 +271,7 @@ def fetchNewsletterEmails():
             log.info("Searching for emails from '%s' (last %d days)...", sender, LOOKBACK_DAYS)
 
             try:
-                status, data = conn.uid("SEARCH", "X-GM-RAW", query.encode("utf-8"))
+                status, data = conn.uid("SEARCH", "X-GM-RAW", f'"{query}"')
             except imaplib.IMAP4.error as e:
                 log.error("IMAP search failed for sender '%s': %s -- skipping.", sender, e)
                 continue
@@ -279,15 +280,22 @@ def fetchNewsletterEmails():
                 log.info("Found 0 message(s) from '%s'.", sender)
                 continue
 
-            # Newest messages sit at the end of the UID list -- take the most recent N.
-            uids = data[0].split()[-MAX_RESULTS_PER_SENDER:]
+            # Newest messages sit at the end of the UID list. Walk newest-first and
+            # collect up to MAX_RESULTS_PER_SENDER that aren't already processed.
+            # (The label exclusion moved from the search query to _fetchOneMessage's
+            # X-GM-LABELS check -- see buildSearchQuery for why.)
+            uids = list(reversed(data[0].split()))
             log.info("Found %d message(s) from '%s'.", len(uids), sender)
 
+            senderCount = 0
             for uid in uids:
+                if senderCount >= MAX_RESULTS_PER_SENDER:
+                    break
                 parsed = _fetchOneMessage(conn, uid.decode())
                 if parsed:
                     parsed["sender"] = sender
                     allEmails.append(parsed)
+                    senderCount += 1
     finally:
         _closeQuietly(conn)
 
@@ -295,17 +303,34 @@ def fetchNewsletterEmails():
     return allEmails
 
 
+def _isAlreadyProcessed(metadata):
+    """
+    Returns True if the X-GM-LABELS field in a FETCH metadata string includes the
+    processed label. Replaces the -label: exclusion that used to live in buildSearchQuery
+    -- that approach required inner double quotes (the label name contains "/") inside
+    an X-GM-RAW quoted string, which Gmail's IMAP parser rejects.
+    @param metadata (str) - decoded FETCH response metadata line
+    @returns (bool)
+    """
+    marker = "X-GM-LABELS"
+    if marker not in metadata:
+        return False
+    after = metadata.split(marker, 1)[1]
+    return PROCESSED_LABEL_NAME.lower() in after.lower()
+
+
 def _fetchOneMessage(conn, uid):
     """
-    Fetches and parses a single message by UID, pulling its Gmail message id in the same
-    round trip so the caller can label it later without re-deriving it.
-    BODY.PEEK[] rather than BODY[] so fetching doesn't mark the newsletter as read.
+    Fetches and parses a single message by UID, pulling its Gmail message id and labels
+    in the same round trip. X-GM-LABELS is used to skip already-processed messages here
+    rather than in the search query (see buildSearchQuery). BODY.PEEK[] rather than
+    BODY[] so fetching doesn't mark the newsletter as read.
     @param conn (imaplib.IMAP4_SSL) - connected IMAP connection with a folder selected
     @param uid (str) - IMAP UID to fetch
-    @returns (dict|None) dict with id/subject/date/body, or None if unusable
+    @returns (dict|None) dict with id/subject/date/body, or None if unusable or processed
     """
     try:
-        status, data = conn.uid("FETCH", uid, "(X-GM-MSGID BODY.PEEK[])")
+        status, data = conn.uid("FETCH", uid, "(X-GM-MSGID X-GM-LABELS BODY.PEEK[])")
     except imaplib.IMAP4.error as e:
         log.warning("Could not fetch message uid=%s: %s -- skipping.", uid, e)
         return None
@@ -314,8 +339,13 @@ def _fetchOneMessage(conn, uid):
         log.warning("Unexpected FETCH response for uid=%s -- skipping.", uid)
         return None
 
-    # data[0] is (metadata_bytes, raw_rfc822_bytes); X-GM-MSGID rides in the metadata.
+    # data[0] is (metadata_bytes, raw_rfc822_bytes); X-GM-MSGID and X-GM-LABELS ride
+    # in the metadata.
     metadata = data[0][0].decode("utf-8", errors="replace")
+
+    if _isAlreadyProcessed(metadata):
+        return None
+
     gmailMessageId = _parseGmailMessageId(metadata)
     if not gmailMessageId:
         log.warning("No X-GM-MSGID in FETCH response for uid=%s -- skipping.", uid)

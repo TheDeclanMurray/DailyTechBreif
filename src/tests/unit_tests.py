@@ -55,10 +55,12 @@ class TestBuildSearchQuery:
         with pytest.raises((ValueError, AttributeError)):
             buildSearchQuery(None)
 
-    def test_validSender_excludesProcessedLabel(self):
-        # Query must exclude already-labeled messages so they aren't re-summarized.
+    def test_validSender_noLabelExclusion(self):
+        # The -label: exclusion was removed from the search query because X-GM-RAW can't
+        # handle nested quotes from the label name. Filtering now happens at fetch time
+        # via X-GM-LABELS (see _isAlreadyProcessed in gmail_client.py).
         query = buildSearchQuery("test@example.com")
-        assert '-label:"tech-briefing/processed"' in query
+        assert "label" not in query
 
 
 # ---------------------------------------------------------------------------
