@@ -270,7 +270,7 @@ def fetchNewsletterEmails():
             log.info("Searching for emails from '%s' (last %d days)...", sender, LOOKBACK_DAYS)
 
             try:
-                status, data = conn.uid("SEARCH", "X-GM-RAW", f'"{query}"')
+                status, data = conn.uid("SEARCH", "X-GM-RAW", query.encode("utf-8"))
             except imaplib.IMAP4.error as e:
                 log.error("IMAP search failed for sender '%s': %s -- skipping.", sender, e)
                 continue
