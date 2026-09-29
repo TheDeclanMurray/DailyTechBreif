@@ -39,16 +39,6 @@ not here). Add the date an item is opened.
   history across runs is still wanted, consider rotating to `pipeline.log.1` before truncating
   instead of just discarding it.
 
-- [ ] **(2026-09-15) Verify the IMAP rewrite against the real mailbox on Lambda** —
-  `src/gmail_client.py` was rewritten from the Gmail API to IMAP + App Password, but it could
-  NOT be tested locally: the office network resets TLS on port 993 (see
-  `docs/ISSUES-ENCOUNTERED.md`). All 56 unit tests pass, which proves the parsing/label logic
-  but says nothing about whether the real connection, search, fetch and labeling work. After
-  `deploy` runs, do a manual `aws lambda invoke` and confirm in CloudWatch: login succeeds, the
-  All Mail folder resolves, emails are fetched, the briefing is delivered, and
-  `Marked N email(s) as processed` appears. Until that's seen, treat this as unproven — the
-  2026-08-28 entry in `CLAUDE.md` is a standing reminder of how convincing a green-looking run
-  can be when it never touched the new code.
 
 - [ ] **(2026-09-15) Check why the daily failure alert emails went unnoticed** —
   `sendFailureAlert()` correctly emailed `dmurray.cobaltix@gmail.com` on every one of the seven

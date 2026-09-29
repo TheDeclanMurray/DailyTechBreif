@@ -45,3 +45,4 @@ infra/terraform.tfstate.backup
 infra/tfplan*
 crash.log
 crash.*.log
+.claude/handoff.md

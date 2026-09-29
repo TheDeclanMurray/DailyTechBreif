@@ -2,9 +2,10 @@
 Text-to-speech conversion using piper-tts and ffmpeg.
 
 Pipeline:
-  1. piper generates a WAV at natural speed (pitch is preserved this way)
-  2. ffmpeg speeds up the audio using the atempo filter, which adjusts tempo
-     without raising pitch -- the same technique podcast apps use for 1.5x playback
+  1. piper reads text from stdin, writes raw PCM (s16le) to stdout
+  2. ffmpeg reads that PCM from stdin, applies atempo speed adjustment,
+     encodes to MP3 in memory -- pitch is preserved, the WAV is never held
+     in memory alongside the MP3
 
 Both binaries are installed in the Docker image at build time.
 """
@@ -13,7 +14,6 @@ import os
 import sys
 import logging
 import subprocess
-import tempfile
 
 from src.config import TTS_VOICE, TTS_SPEED, TTS_MODEL_DIR
 
@@ -29,6 +29,13 @@ FFMPEG_BINARY = "/usr/local/bin/ffmpeg"
 # atempo must be between 0.5 and 2.0 -- ffmpeg hard limit
 ATEMPO_MIN = 0.5
 ATEMPO_MAX = 2.0
+
+# Raw PCM format piper emits via --output-raw (headerless s16le).
+# These values are model-specific -- en_GB-jenny_dioco-medium.onnx.json confirms
+# sample_rate=22050; channels defaults to 1 (mono) when absent from the model config.
+# Update if TTS_VOICE is changed to a model with different audio properties.
+PIPER_SAMPLE_RATE = 22050
+PIPER_CHANNELS    = 1
 
 
 def _modelPath():
@@ -98,64 +105,60 @@ def convertToMp3(text):
     log.info("TTS voice: '%s' | speed: %sx (pitch-corrected via ffmpeg atempo)", TTS_VOICE, TTS_SPEED)
     log.info("Input text: %s characters", f"{len(text):,}")
 
-    # Step 1: piper reads text from stdin, writes WAV at natural speed (1.0).
-    # We intentionally do NOT pass --length-scale -- pitch correction only works
-    # cleanly when piper generates at its natural rate and ffmpeg handles speed.
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmpWav:
-        tmpWavPath = tmpWav.name
+    # Pipe piper's raw PCM output directly into ffmpeg so the full WAV is never
+    # held in memory alongside the encoded MP3.  piper --output-raw writes
+    # headerless s16le PCM; ffmpeg reads it with explicit format hints since
+    # there is no WAV header to sniff from.
+    piperCmd = [
+        PIPER_BINARY,
+        "--model",        modelFile,
+        "--output-raw",
+    ]
 
-    try:
-        piperCmd = [
-            PIPER_BINARY,
-            "--model",       modelFile,
-            "--output-file", tmpWavPath,
-        ]
+    ffmpegCmd = [
+        FFMPEG_BINARY,
+        "-y",
+        "-f",        "s16le",
+        "-ar",       str(PIPER_SAMPLE_RATE),
+        "-ac",       str(PIPER_CHANNELS),
+        "-i",        "pipe:0",
+        "-filter:a", f"atempo={TTS_SPEED}",
+        "-q:a",      "2",
+        "-f",        "mp3",
+        "pipe:1",
+    ]
 
-        piperResult = subprocess.run(
-            piperCmd,
-            input=text.encode("utf-8"),
-            capture_output=True,
-        )
+    piperProc = subprocess.Popen(
+        piperCmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
-        if piperResult.returncode != 0:
-            errMsg = piperResult.stderr.decode("utf-8", errors="replace")
-            log.error("piper failed (exit %d):\n%s", piperResult.returncode, errMsg)
-            sys.exit(1)
+    ffmpegProc = subprocess.Popen(
+        ffmpegCmd,
+        stdin=piperProc.stdout,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
 
-        log.info("WAV generated (%s bytes). Applying %sx tempo...", f"{os.path.getsize(tmpWavPath):,}", TTS_SPEED)
+    # Close our reference to piper's stdout so ffmpeg holds the only open end;
+    # ffmpeg will see EOF when piper exits naturally.
+    piperProc.stdout.close()
 
-        # Step 2: ffmpeg speeds up audio without changing pitch, streaming the
-        # encoded MP3 to stdout instead of a file -- "-f mp3 pipe:1" forces the
-        # container format since ffmpeg can't infer it from a file extension
-        # when writing to a pipe.
-        # atempo=1.5 means 1.5x speed -- valid range 0.5 to 2.0.
-        # -q:a 2 is ~190kbps VBR -- good quality for voice.
-        ffmpegCmd = [
-            FFMPEG_BINARY,
-            "-y",
-            "-i",           tmpWavPath,
-            "-filter:a",    f"atempo={TTS_SPEED}",
-            "-q:a",         "2",
-            "-f",           "mp3",
-            "pipe:1",
-        ]
+    piperProc.stdin.write(text.encode("utf-8"))
+    piperProc.stdin.close()
 
-        ffmpegResult = subprocess.run(
-            ffmpegCmd,
-            capture_output=True,
-        )
+    mp3Bytes, ffmpegStderr = ffmpegProc.communicate()
+    piperStderr = piperProc.stderr.read()
 
-        if ffmpegResult.returncode != 0:
-            errMsg = ffmpegResult.stderr.decode("utf-8", errors="replace")
-            log.error("ffmpeg failed (exit %d):\n%s", ffmpegResult.returncode, errMsg)
-            sys.exit(1)
+    if piperProc.wait() != 0:
+        log.error("piper failed (exit %d):\n%s", piperProc.returncode, piperStderr.decode("utf-8", errors="replace"))
+        sys.exit(1)
 
-        mp3Bytes = ffmpegResult.stdout
-
-    finally:
-        # Always clean up the temp WAV
-        if os.path.exists(tmpWavPath):
-            os.remove(tmpWavPath)
+    if ffmpegProc.returncode != 0:
+        log.error("ffmpeg failed (exit %d):\n%s", ffmpegProc.returncode, ffmpegStderr.decode("utf-8", errors="replace"))
+        sys.exit(1)
 
     log.info("MP3 encoded in memory (%s bytes / %d KB).", f"{len(mp3Bytes):,}", len(mp3Bytes) // 1024)
     return mp3Bytes

@@ -108,6 +108,14 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
   run manually, not in CI or the `test` service: `python -m pytest src/tests/integration_tests.py -v`
 
 ## Progress
+- [x] **TTS pipeline changed from temp-file to streamed pipe (2026-09-28)** — piper previously
+      wrote a full WAV to a `NamedTemporaryFile`, which ffmpeg then read; both processes held their
+      full audio buffers simultaneously, driving peak Lambda memory to 1,242 MB of the 1,536 MB
+      ceiling. `src/tts.py` now uses `piper --output-raw` (headerless PCM to stdout) piped directly
+      into ffmpeg's stdin with explicit format hints (`-f s16le -ar 22050 -ac 1` — values from
+      `en_GB-jenny_dioco-medium.onnx.json`). The temp file and its `finally`-cleanup are gone.
+      If `TTS_VOICE` is ever changed, `PIPER_SAMPLE_RATE` and `PIPER_CHANNELS` in `src/tts.py`
+      must match the new model's config. 56 unit tests still pass.
 - [x] **Diagnosed a week of dead briefings and moved Gmail reading off OAuth to IMAP + App
       Password (2026-09-15)** — user reported briefings broken for about a week. AWS showed the
       Lambda firing on schedule every weekday with `Errors` at 0.0, i.e. every run recorded as a
@@ -130,9 +138,13 @@ All config flows through `src/config.py` — nothing reads `os.environ` directly
       a raising handler that would mean 185 pipeline re-runs and 185 alert emails per failure,
       and it is also the true root cause of the 2026-08-31 duplicate-briefing bug that was fixed
       at the symptom (timeout 300→600) rather than the mechanism; pinned to 0. 56 unit tests
-      pass. **Not yet verified against the real mailbox** — the office network resets TLS on port
-      993, so the IMAP path could not be exercised locally at all; needs a manual
-      `aws lambda invoke` after deploy. See `docs/TODO.md` and `docs/ISSUES-ENCOUNTERED.md`.
+      pass. **Verified against the real mailbox on Lambda (2026-09-28)** — a manual
+      `aws lambda invoke` after deploying commit `f267f13` confirmed: IMAP search succeeds with no
+      `BAD` error, 10 emails fetched (2 Last Week in AWS, 5 TLDR, 3 Rundown), Claude summarized,
+      TTS ran, briefing delivered to both recipients, and `Marked 10 email(s) as processed`
+      appeared in CloudWatch. Duration: 210s, well within the 600s timeout. Peak memory: 1,242 MB
+      of the provisioned 1,536 MB. See `docs/ISSUES-ENCOUNTERED.md` for the full trail of the
+      X-GM-RAW nested-quote bug that required two prior fix attempts before this one landed.
 - [x] **Full pipeline confirmed end to end on a real EventBridge-triggered run, deployed Lambda
       labeling confirmed too, and a duplicate-email bug found and fixed (2026-08-31)** — the
       Mon–Fri 7am scheduled run actually fired via EventBridge (not a manual invoke) and completed
@@ -299,12 +311,15 @@ All in `src/config.py`:
   Cobaltix network — TCP connects, then TLS is reset. Port 587 (SMTP submission) is allowed,
   which is why sending always worked locally. Local end-to-end testing requires a different
   network; deployed Lambda runs are unaffected (no VPC, unrestricted AWS egress).
-- **piper-tts + ffmpeg (Phase 2)**: piper generates a WAV at natural speed (voice model
-  `en_GB-jenny_dioco-medium` by default, downloaded from HuggingFace at build time and baked into
-  the image — changing `TTS_VOICE` requires updating the model wget URL in the Dockerfile and
-  rebuilding); ffmpeg then applies the speed change via its `atempo` filter (`TTS_SPEED`, default
-  `1.5`), which preserves pitch — piper's own `--length-scale` doesn't. ffmpeg itself is a static
-  binary baked into the image (not available via AL2023's `dnf` repos) — see
+- **piper-tts + ffmpeg (Phase 2)**: piper reads text from stdin and writes raw PCM (`--output-raw`)
+  directly into ffmpeg's stdin, which applies tempo via `atempo` and encodes to MP3 in memory —
+  the WAV is never written to disk or fully buffered alongside the MP3. Voice model
+  `en_GB-jenny_dioco-medium` by default (downloaded from HuggingFace at build time and baked into
+  the image — changing `TTS_VOICE` requires updating the model wget URL in the Dockerfile,
+  updating `PIPER_SAMPLE_RATE`/`PIPER_CHANNELS` in `src/tts.py` to match the new model's
+  `.onnx.json`, and rebuilding). ffmpeg applies the speed change via `atempo` (`TTS_SPEED`,
+  default `1.5`), which preserves pitch — piper's own `--length-scale` doesn't. ffmpeg itself is
+  a static binary baked into the image (not available via AL2023's `dnf` repos) — see
   `docs/DECISIONS.md`/`docs/ISSUES-ENCOUNTERED.md` for why that source changed twice.
 - **Prompt caching**: The Claude API call in `summarizer.py` marks the large user content
   block as `ephemeral` cache. This saves ~90% on repeated runs with similar content.

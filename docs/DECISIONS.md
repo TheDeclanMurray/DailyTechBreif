@@ -174,3 +174,12 @@ says so and points back at the one it supersedes; don't rewrite history.
   metric and trips the CloudWatch alarm. A single missed briefing is cheap to absorb —
   `markEmailsAsProcessed()` only labels after a successful delivery, so the next run picks the
   same emails up.
+
+- **(2026-09-28) TTS pipeline changed to stream piper PCM directly into ffmpeg** — previously
+  piper wrote a full WAV to a `NamedTemporaryFile` and ffmpeg read that file; both processes held
+  their audio in memory simultaneously, driving peak Lambda memory to 1,242 MB of the 1,536 MB
+  ceiling. Changed to `piper --output-raw` (headerless s16le PCM to stdout) piped directly into
+  ffmpeg stdin with explicit format hints (`-f s16le -ar 22050 -ac 1` matching
+  `en_GB-jenny_dioco-medium`'s config). Trade-off: the PCM format constants (`PIPER_SAMPLE_RATE`,
+  `PIPER_CHANNELS` in `src/tts.py`) are model-specific and must be updated if `TTS_VOICE` ever
+  changes. The temp file and cleanup block are gone.
